@@ -60,6 +60,9 @@ PRIMARY = "joey@surven.ai"
 SENDERS_FILE = ROOT / "data" / "carehome" / "senders.json"
 RAMP = [(3, 8), (7, 15), (14, 25), (10 ** 6, 40)]  # (days since ready, max sends/day incl. follow-ups)
 RUN_BUDGET = 27 * 60   # seconds; a run's last send starts before the next 30-min run
+# 9/29: GitHub can start scheduled runs late or drop them when busy. A cloud run that comes 20+ minutes after the
+# last one (or after 7 AM ET) catches up: up to 4 sends per sender, 2-5 min apart, so late runs don't cut the day.
+LAST_RUN_FILE = ROOT / "data" / "carehome" / "last_run.json"
 FREEMAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com", "msn.com", "live.com", "comcast.net"}
 
 SCHEMA = """
@@ -430,7 +433,20 @@ def scan_replies_full(con, cfg) -> None:
             pass
 
 
-def due_items(con, queue: dict, now_utc: datetime, senders: dict) -> list:
+def cloud_per_run(now: datetime) -> int:
+    """Sends allowed per sender this cloud run: 1 when runs come every 10 min, more when GitHub ran late."""
+    try:
+        last = datetime.fromisoformat(json.load(open(LAST_RUN_FILE))["at"])
+    except Exception:
+        last = None
+    LAST_RUN_FILE.write_text(json.dumps({"at": now.isoformat()}))
+    day_start = now.astimezone(ZoneInfo("America/New_York")).replace(hour=WINDOW[0], minute=0, second=0, microsecond=0)
+    since = max(last, day_start) if last else day_start
+    gap = (now - since).total_seconds() / 60
+    return max(1, min(4, int((gap + 5) // 10)))
+
+
+def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int = MAX_PER_RUN) -> list:
     """-> [(row, queue entry, step, sender address)]. Follow-ups go out from the home's own sender first;
     new homes then fill whichever ready sender has the most room left today."""
     used = {a: {"total": 0, "new": 0, "run": 0} for a in senders}
@@ -443,7 +459,7 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict) -> list:
 
     def room(a, new):
         u, c = used[a], senders[a]
-        return u["total"] < c["cap_total"] and u["run"] < MAX_PER_RUN and (not new or u["new"] < c["cap_new"])
+        return u["total"] < c["cap_total"] and u["run"] < per_run and (not new or u["new"] < c["cap_new"])
 
     follow, fresh = [], []
     for r in con.execute("SELECT * FROM prospects WHERE status IN ('queued','active') ORDER BY rank DESC, id"):
@@ -536,7 +552,11 @@ def cmd_run(con, dry: bool) -> None:
     except Exception as ex:
         log(f"sender check error: {ex!r}")
     senders = load_senders(cfg)
-    items = due_items(con, queue, datetime.now().astimezone(), senders)
+    now = datetime.now().astimezone()
+    per_run = cloud_per_run(now) if CLOUD and not dry else MAX_PER_RUN
+    if per_run > 1 and CLOUD:
+        log(f"run: GitHub ran late, catching up with up to {per_run} per sender")
+    items = due_items(con, queue, now, senders, per_run)
     if not items:
         log("run: nothing due in any send window")
     else:
@@ -548,8 +568,10 @@ def cmd_run(con, dry: bool) -> None:
         plan, clock = [], {}
         for it in items:
             a = it[3]
-            if CLOUD:  # one send per sender per run; different senders go out 5-25 s apart
+            if CLOUD and a not in clock:  # a sender's first send; different senders go out 5-25 s apart
                 t = max(clock.values(), default=0) + random.uniform(5, 25)
+            elif CLOUD:  # catch-up runs only: that sender's next one 2-5 min later
+                t = clock[a] + random.uniform(120, 300)
             else:
                 t = clock.get(a, 0) + (random.uniform(60, 240) if a not in clock else random.uniform(120, 300))
             if t > RUN_BUDGET:
