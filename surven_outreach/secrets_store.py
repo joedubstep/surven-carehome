@@ -6,7 +6,7 @@ import os
 import re
 
 PIA_DIR = r"C:\Users\evann\Desktop\PIA"
-_CLOUD = json.loads(os.environ["CAREHOME_SECRETS"]) if os.environ.get("CAREHOME_SECRETS") else None
+_CLOUD = json.loads(os.environ["CAREHOME_SECRETS"].lstrip("﻿")) if os.environ.get("CAREHOME_SECRETS") else None
 
 
 def _pias() -> str:
