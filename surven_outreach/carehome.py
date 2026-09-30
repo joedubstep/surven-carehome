@@ -61,7 +61,7 @@ SENDERS_FILE = ROOT / "data" / "carehome" / "senders.json"
 RAMP = [(3, 8), (7, 15), (14, 25), (10 ** 6, 40)]  # (days since ready, max sends/day incl. follow-ups)
 RUN_BUDGET = 27 * 60   # seconds; a run's last send starts before the next 30-min run
 # 9/29: GitHub can start scheduled runs late or drop them when busy. A cloud run that comes 20+ minutes after the
-# last one (or after 7 AM ET) catches up: up to 4 sends per sender, 2-5 min apart, so late runs don't cut the day.
+# last one (or after 7 AM ET) catches up: up to 6 sends per sender, 2-5 min apart, so late runs don't cut the day.
 LAST_RUN_FILE = ROOT / "data" / "carehome" / "last_run.json"
 FREEMAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com", "msn.com", "live.com", "comcast.net"}
 
@@ -439,11 +439,10 @@ def cloud_per_run(now: datetime) -> int:
         last = datetime.fromisoformat(json.load(open(LAST_RUN_FILE))["at"])
     except Exception:
         last = None
-    LAST_RUN_FILE.write_text(json.dumps({"at": now.isoformat()}))
     day_start = now.astimezone(ZoneInfo("America/New_York")).replace(hour=WINDOW[0], minute=0, second=0, microsecond=0)
     since = max(last, day_start) if last else day_start
     gap = (now - since).total_seconds() / 60
-    return max(1, min(4, int((gap + 5) // 10)))
+    return max(1, min(6, int((gap + 5) // 10)))
 
 
 def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int = MAX_PER_RUN) -> list:
@@ -490,6 +489,12 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
             items.append((r, p, step, a))
             used[a]["total"] += 1; used[a]["run"] += 1
     for r, p, step in fresh:
+        if r["sender"]:  # 9/30: pinned after ImprovMX's spam filter refused it from a .xyz address
+            if r["sender"] in senders and room(r["sender"], True):
+                a = r["sender"]
+                items.append((r, p, step, a))
+                used[a]["total"] += 1; used[a]["new"] += 1; used[a]["run"] += 1
+            continue
         open_ = [a for a in senders if room(a, True)]
         if not open_:
             break
@@ -510,7 +515,7 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
         subject = extra["Subject"]
     if dry:
         log(f"DRY would send {r['id']} step {step} from {from_addr} to {r['email']} subj={subject!r}")
-        return
+        return "dry"
     msg = build_message(FROM_NAME, from_addr, r["email"], subject, em["body"], mid,
                         {**extra, "Date": format_datetime(datetime.now().astimezone())})
     try:
@@ -519,9 +524,18 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
         if ex.__class__.__name__ in ("SMTPRecipientsRefused", "SMTPSenderRefused"):
             stop(con, r["id"], "bounced", f"refused at send: {ex!r}"[:200])
             log(f"stop {r['id']}: refused at send")
-        else:
-            log(f"send failed {r['id']} step {step}: {ex!r} (will retry next run)")
-        return
+            return "bounced"
+        # 9/30: some GitHub machines' IPs are on Spamhaus, so ImprovMX refuses the whole connection
+        if ex.__class__.__name__ == "SMTPHeloError" or "black listed" in str(ex):
+            log(f"send blocked {r['id']}: this cloud machine's IP is on a blocklist, stopping this run")
+            return "blocked"
+        if "considered as SPAM" in str(ex) and step == 1 and from_addr != PRIMARY:
+            con.execute("UPDATE prospects SET sender=? WHERE id=?", (PRIMARY, r["id"]))
+            con.commit()
+            log(f"send failed {r['id']}: ImprovMX spam filter refused it from {from_addr}, will go from {PRIMARY}")
+            return "spam"
+        log(f"send failed {r['id']} step {step}: {ex!r} (will retry next run)")
+        return "failed"
     now = datetime.now().astimezone()
     local_day = now.astimezone(ZoneInfo(r["tz"])).date().isoformat()
     con.execute("INSERT INTO sends (prospect_id,step,email,subject,body,message_id,sent_at,sender) VALUES (?,?,?,?,?,?,?,?)",
@@ -535,6 +549,7 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
     con.commit()
     log(f"SENT {r['id']} step {step} from {from_addr} to {r['email']}")
     save_to_sent(cfg, msg, now)
+    return "sent"
 
 
 def cmd_run(con, dry: bool) -> None:
@@ -557,6 +572,7 @@ def cmd_run(con, dry: bool) -> None:
     if per_run > 1 and CLOUD:
         log(f"run: GitHub ran late, catching up with up to {per_run} per sender")
     items = due_items(con, queue, now, senders, per_run)
+    blocked = False
     if not items:
         log("run: nothing due in any send window")
     else:
@@ -583,7 +599,11 @@ def cmd_run(con, dry: bool) -> None:
         for t, (r, p, step, a) in plan:
             if not dry and not TEST_IGNORE_TIMING:
                 time.sleep(max(0.0, start + t - time.monotonic()))
-            send_one(con, cfg, smtp[a], r, p, step, dry, a)
+            if send_one(con, cfg, smtp[a], r, p, step, dry, a) == "blocked":
+                blocked = True
+                break
+    if CLOUD and not dry and not blocked:  # a blocked run doesn't count, so the next run catches up
+        LAST_RUN_FILE.write_text(json.dumps({"at": now.isoformat()}))
     if not dry:
         try:  # 9/29: Joey's Google Sheet shows each home's status within 30 minutes (carehome_sheet.py)
             from . import carehome_sheet

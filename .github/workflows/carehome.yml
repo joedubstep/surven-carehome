@@ -27,7 +27,7 @@ permissions:
 jobs:
   carehome:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       TZ: America/New_York
       CAREHOME_CLOUD: "1"
