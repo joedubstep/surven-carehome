@@ -4,9 +4,13 @@ name: carehome
 
 on:
   schedule:
-    - cron: "*/10 11-19 * * *"       # send windows: 7-10 AM local for ET through PT/AK homes (UTC), every 10 min
-    - cron: "5 0-10,20-23 * * *"      # rest of the day: hourly reply/bounce check + reply texts to Joey
+    - cron: "3-59/10 11-19 * * *"    # send windows: 7-10 AM local for ET through PT/AK homes (UTC), every 10 min
+    - cron: "7 0-10,20-23 * * *"      # rest of the day: hourly reply/bounce check + reply texts to Joey
     - cron: "20 1 * * *"              # nightly stats to Notion (9:20 PM ET)
+  # 9/29: GitHub's timer never fired on this new repo, so a Claude cloud routine also pushes an empty commit to
+  # claude/tick every hour as a backup clock. Extra runs are harmless: daily caps and one-send-per-step hold.
+  push:
+    branches: ["claude/tick"]
   workflow_dispatch:
     inputs:
       task:
@@ -30,6 +34,8 @@ jobs:
       CAREHOME_SECRETS: ${{ secrets.CAREHOME_SECRETS }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main   # tick pushes carry no code; always run the latest engine
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -47,6 +53,7 @@ jobs:
           T="${{ github.event.inputs.task }}"
           if [ -z "$T" ]; then
             if [ "${{ github.event.schedule }}" = "20 1 * * *" ]; then T=stats; else T=run; fi
+            if [ "${{ github.event_name }}" = "push" ] && [ "$(date +%H)" = "21" ]; then T=stats; fi
           fi
           echo "task=$T" >> "$GITHUB_OUTPUT"
       - name: Campaign run
