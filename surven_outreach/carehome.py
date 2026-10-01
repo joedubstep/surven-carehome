@@ -22,13 +22,13 @@ import time
 import sqlite3
 import sys
 from datetime import date, datetime, timedelta
-from email.utils import format_datetime
+from email.utils import format_datetime, parseaddr
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import load_config
 from .notify import notify_reply
-from .reply_scan import OPT_OUT
+from .reply_text import is_opt_out, new_text, sender_name
 from .sender import SmtpSender, build_message
 from .threading_headers import new_message_id, reply_headers
 
@@ -175,17 +175,6 @@ def _is_auto(m) -> bool:
     return any(k in subj for k in ("out of office", "automatic reply", "auto-reply", "autoreply", "away from", "vacation"))
 
 
-def _text(m) -> str:
-    parts = m.walk() if m.is_multipart() else [m]
-    for part in parts:
-        if part.get_content_type() == "text/plain":
-            try:
-                return part.get_payload(decode=True).decode(errors="ignore")
-            except Exception:
-                return ""
-    return ""
-
-
 SENT_BOX = '"[Gmail]/Sent Mail"'
 
 
@@ -229,12 +218,20 @@ ALERTS_INFLIGHT = LOG.parent / "alerts_inflight.jsonl"
 ALERTS_SENT = LOG.parent / "alerts_sent.jsonl"
 
 
-def queue_alert(r, status: str, first_line: str) -> None:
-    who = (f"{r['first_name']} at " if r["first_name"] else "") + r["facility"]
-    said = first_line[:70] + ("..." if len(first_line) > 70 else "")
-    msg = (f"Opt-out: {who} said \"{said}\". Thread stopped." if status == "opted_out"
-           else f"Cold email reply: {who} said \"{said}\". Call them now.")
-    rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": r["id"], "email": r["email"], "msg": msg[:195]}
+def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str = "") -> None:
+    """The whole reply goes to Joey (reply_text.py says why), with who really wrote it. When someone other than the
+    person we emailed answers (a coworker, a new manager), the alert names both."""
+    emailed = r["first_name"] or ""
+    other = bool(from_addr) and from_addr.lower() != (r["email"] or "").lower()
+    who = from_name or emailed or "Someone"
+    if other and emailed and emailed.lower() not in who.lower():
+        who += f" (we emailed {emailed})"
+    said = said.strip()
+    if len(said) > 900:
+        said = said[:900].rsplit(" ", 1)[0] + "..."
+    msg = (f"Opt-out: {who} at {r['facility']}. Thread stopped. They wrote:\n\"{said}\"" if status == "opted_out"
+           else f"Cold email reply: {who} at {r['facility']} wrote:\n\"{said}\"\nCall them now.")
+    rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": r["id"], "email": r["email"], "msg": msg[:1400]}
     with open(ALERTS_PENDING, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -364,16 +361,15 @@ def scan_replies(con, cfg) -> None:
                     if not pid or when <= first[pid] or rows[pid]["status"] not in ("active", "completed") or _is_auto(h):
                         continue
                     _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
-                    raw = _text(email.message_from_bytes(body[0][1]))
-                    first_line = next((l.strip() for l in raw.lower().splitlines() if l.strip()), "")
-                    status = "opted_out" if first_line.startswith(("no", "stop", "unsubscribe", "remove")) or any(
-                        k in first_line for k in OPT_OUT) else "replied"
+                    full = email.message_from_bytes(body[0][1])
+                    said = new_text(full)
+                    status = "opted_out" if is_opt_out(said) else "replied"
                     r = rows[pid]
-                    stop(con, pid, status, "reply in inbox")
+                    stop(con, pid, status, f"reply in inbox: {said[:300]}")
                     log(f"stop {pid}: {status}")
                     stopped += 1
                     notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
-                    queue_alert(r, status, next((l.strip() for l in raw.splitlines() if l.strip()), ""))
+                    queue_alert(r, status, said, sender_name(full), sender)
                     rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
                 except Exception as ex:  # one bad message must not block the rest
                     log(f"scan error uid {uid}: {ex!r}")
@@ -414,16 +410,13 @@ def scan_replies_full(con, cfg) -> None:
                 human = [m for m in _msgs_after(c, ["FROM", f'"{who}"'], after) if not _is_auto(m)]
                 if not human:
                     continue
-                text = _text(human[-1]).lower()
-                first_line = next((l.strip() for l in text.splitlines() if l.strip()), "")
-                status = "opted_out" if first_line.startswith(("no", "stop", "unsubscribe", "remove")) or any(
-                    k in first_line for k in OPT_OUT) else "replied"
-                stop(con, r["id"], status, "reply in inbox")
+                said = new_text(human[-1])
+                status = "opted_out" if is_opt_out(said) else "replied"
+                stop(con, r["id"], status, f"reply in inbox: {said[:300]}")
                 log(f"stop {r['id']}: {status}")
                 # alert Joey on every human reply, opt-outs included, so nothing sits unread
                 notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
-                raw_first = next((l.strip() for l in _text(human[-1]).splitlines() if l.strip()), "")
-                queue_alert(r, status, raw_first)
+                queue_alert(r, status, said, sender_name(human[-1]), parseaddr(human[-1].get("From", ""))[1])
             except Exception as ex:  # one bad lookup must not block the rest
                 log(f"scan error {r['id']}: {ex!r}")
     finally:

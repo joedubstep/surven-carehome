@@ -3,6 +3,7 @@ import imaplib
 from datetime import date, timedelta
 
 from . import db as dbm
+from .reply_text import body_text, is_opt_out, new_text
 
 OPT_OUT = ("unsubscribe", "not interested", "stop", "remove me", "take me off")
 
@@ -13,18 +14,7 @@ COMPLETED_REPLY_WINDOW_DAYS = 21
 
 
 def _email_body_text(m) -> str:
-    if m.is_multipart():
-        for part in m.walk():
-            if part.get_content_type() == "text/plain":
-                try:
-                    return part.get_payload(decode=True).decode(errors="ignore")
-                except Exception:
-                    return ""
-        return ""
-    try:
-        return m.get_payload(decode=True).decode(errors="ignore")
-    except Exception:
-        return ""
+    return body_text(m)  # plain part, or the HTML part as text (reply_text.py)
 
 
 def classify_and_mark(con, gmail) -> dict:
@@ -47,8 +37,8 @@ def classify_and_mark(con, gmail) -> dict:
             if gmail.is_auto_reply_from(e):
                 results["auto_skipped"].append(e)   # out-of-office / autoresponder: not a real reply
                 continue
-            text = (gmail.body_text_from(e) or "").lower()
-            status = "opted_out" if any(p in text for p in OPT_OUT) else "replied"
+            # Only what they wrote, not our quoted email under it (2026-10-01, reply_text.py)
+            status = "opted_out" if is_opt_out(new_text(gmail.body_text_from(e) or "")) else "replied"
             dbm.mark(con, e, status)
             results[status].append(e)
     return results
@@ -120,13 +110,7 @@ class ImapClient:
             if not ids:
                 return ""
             _, msg_data = c.fetch(ids[-1], "(RFC822)")
-            m = email.message_from_bytes(msg_data[0][1])
-            if m.is_multipart():
-                for part in m.walk():
-                    if part.get_content_type() == "text/plain":
-                        return part.get_payload(decode=True).decode(errors="ignore")
-                return ""
-            return m.get_payload(decode=True).decode(errors="ignore")
+            return body_text(email.message_from_bytes(msg_data[0][1]))
         finally:
             c.logout()
 
