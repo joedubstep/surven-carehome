@@ -301,7 +301,6 @@ def scan_replies(con, cfg) -> None:
     """9/29 incremental scan: reads only inbox mail that arrived since the last run (by IMAP UID) and matches it to a
     thread by In-Reply-To/References, then exact address, then the business domain when only one live thread uses it.
     Same outcomes as before: bounce -> 'bounced'; human reply -> 'replied' or 'opted_out', alert + text to Joey."""
-    import re
     from email.utils import parseaddr, parsedate_to_datetime
     rows = {r["id"]: r for r in con.execute("SELECT * FROM prospects WHERE status IN ('active','completed')")}
     first = {pid: datetime.fromisoformat(t) for pid, t in
@@ -315,72 +314,83 @@ def scan_replies(con, cfg) -> None:
         if d not in FREEMAIL:
             by_dom.setdefault(d, []).append(pid)
     state = json.load(open(SCAN_STATE)) if SCAN_STATE.exists() else {}
+    if "uidvalidity" in state:  # old one-folder format = the inbox
+        state = {"INBOX": state}
     c = imaplib.IMAP4_SSL(cfg.imap_host, timeout=60)
     c.login(cfg.imap_user, cfg.imap_password)
     try:
-        c.select("INBOX", readonly=True)
-        uv = (c.untagged_responses.get("UIDVALIDITY") or [b"0"])[0].decode()
-        if state.get("uidvalidity") == uv and state.get("last_uid"):
-            _, d = c.uid("search", None, f"UID {int(state['last_uid']) + 1}:*")
-        else:  # first run (or Gmail reset UIDs): everything since the campaign started
-            _, d = c.uid("search", None, "SINCE", "22-Sep-2026")
-        uids = [int(u) for u in (d[0].split() if d and d[0] else [])]
-        uids = [u for u in uids if u > int(state.get("last_uid") or 0) or state.get("uidvalidity") != uv]
-        stopped = 0
-        for i in range(0, len(uids), 200):
-            chunk = uids[i:i + 200]
-            _, data = c.uid("fetch", ",".join(map(str, chunk)),
-                            "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT IN-REPLY-TO REFERENCES AUTO-SUBMITTED PRECEDENCE X-AUTOREPLY)])")
-            for part in data:
-                if not isinstance(part, tuple):
-                    continue
-                meta = part[0].decode(errors="ignore")
-                uid = int(re.search(r"UID (\d+)", meta).group(1))
-                when = imaplib.Internaldate2tuple(part[0])
-                when = datetime.fromtimestamp(time.mktime(when)).astimezone() if when else None
-                h = email.message_from_bytes(part[1])
-                sender = parseaddr(h.get("From", ""))[1].lower()
-                if not sender or when is None:
-                    continue
-                try:
-                    if any(b in sender for b in BOUNCE_FROM):
-                        _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
-                        text = email.message_from_bytes(body[0][1]).as_string().lower()
-                        for e in set(EMAIL_RE.findall(text)):
-                            pid = by_email.get(e)
-                            if pid and when > first[pid] and rows[pid]["status"] in ("active", "completed"):
-                                stop(con, pid, "bounced", "bounce notice in inbox")
-                                log(f"stop {pid}: bounced")
-                                stopped += 1
-                        continue
-                    refs = re.findall(r"<([^>]+)>", (h.get("In-Reply-To", "") or "") + " " + (h.get("References", "") or ""))
-                    pid = next((by_mid[x.lower()] for x in refs if x.lower() in by_mid), None) or by_email.get(sender)
-                    if not pid:
-                        cands = by_dom.get(sender.split("@")[-1], [])
-                        pid = cands[0] if len(cands) == 1 else None  # a coworker at the same business (owner forwards it)
-                    if not pid or when <= first[pid] or rows[pid]["status"] not in ("active", "completed") or _is_auto(h):
-                        continue
-                    _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
-                    full = email.message_from_bytes(body[0][1])
-                    said = new_text(full)
-                    status = "opted_out" if is_opt_out(said) else "replied"
-                    r = rows[pid]
-                    stop(con, pid, status, f"reply in inbox: {said[:300]}")
-                    log(f"stop {pid}: {status}")
-                    stopped += 1
-                    notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
-                    queue_alert(r, status, said, sender_name(full), sender)
-                    rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
-                except Exception as ex:  # one bad message must not block the rest
-                    log(f"scan error uid {uid}: {ex!r}")
-        if uids:
-            json.dump({"uidvalidity": uv, "last_uid": max(uids)}, open(SCAN_STATE, "w"))
-        log(f"scan: {len(uids)} new inbox message(s), {stopped} thread(s) stopped")
+        # 10/3: Gmail put 13 ImprovMX bounce notices in Spam, so the scan missed them. Read Spam too.
+        for box in ("INBOX", "[Gmail]/Spam"):
+            _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom)
+        json.dump(state, open(SCAN_STATE, "w"))
     finally:
         try:
             c.logout()
         except Exception:
             pass
+
+
+def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) -> None:
+    import re
+    st = state.setdefault(box, {})
+    c.select(f'"{box}"', readonly=True)
+    uv = (c.untagged_responses.get("UIDVALIDITY") or [b"0"])[0].decode()
+    if st.get("uidvalidity") == uv and st.get("last_uid"):
+        _, d = c.uid("search", None, f"UID {int(st['last_uid']) + 1}:*")
+    else:  # first run (or Gmail reset UIDs): everything since the campaign started
+        _, d = c.uid("search", None, "SINCE", "22-Sep-2026")
+    uids = [int(u) for u in (d[0].split() if d and d[0] else [])]
+    uids = [u for u in uids if u > int(st.get("last_uid") or 0) or st.get("uidvalidity") != uv]
+    stopped = 0
+    for i in range(0, len(uids), 200):
+        chunk = uids[i:i + 200]
+        _, data = c.uid("fetch", ",".join(map(str, chunk)),
+                        "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT IN-REPLY-TO REFERENCES AUTO-SUBMITTED PRECEDENCE X-AUTOREPLY)])")
+        for part in data:
+            if not isinstance(part, tuple):
+                continue
+            meta = part[0].decode(errors="ignore")
+            uid = int(re.search(r"UID (\d+)", meta).group(1))
+            when = imaplib.Internaldate2tuple(part[0])
+            when = datetime.fromtimestamp(time.mktime(when)).astimezone() if when else None
+            h = email.message_from_bytes(part[1])
+            sender = parseaddr(h.get("From", ""))[1].lower()
+            if not sender or when is None:
+                continue
+            try:
+                if any(b in sender for b in BOUNCE_FROM):
+                    _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
+                    text = email.message_from_bytes(body[0][1]).as_string().lower()
+                    for e in set(EMAIL_RE.findall(text)):
+                        pid = by_email.get(e)
+                        if pid and when > first[pid] and rows[pid]["status"] in ("active", "completed"):
+                            stop(con, pid, "bounced", "bounce notice in inbox" if box == "INBOX" else "bounce notice in spam folder")
+                            log(f"stop {pid}: bounced")
+                            stopped += 1
+                    continue
+                refs = re.findall(r"<([^>]+)>", (h.get("In-Reply-To", "") or "") + " " + (h.get("References", "") or ""))
+                pid = next((by_mid[x.lower()] for x in refs if x.lower() in by_mid), None) or by_email.get(sender)
+                if not pid:
+                    cands = by_dom.get(sender.split("@")[-1], [])
+                    pid = cands[0] if len(cands) == 1 else None  # a coworker at the same business (owner forwards it)
+                if not pid or when <= first[pid] or rows[pid]["status"] not in ("active", "completed") or _is_auto(h):
+                    continue
+                _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
+                full = email.message_from_bytes(body[0][1])
+                said = new_text(full)
+                status = "opted_out" if is_opt_out(said) else "replied"
+                r = rows[pid]
+                stop(con, pid, status, f"reply in inbox: {said[:300]}")
+                log(f"stop {pid}: {status}")
+                stopped += 1
+                notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
+                queue_alert(r, status, said, sender_name(full), sender)
+                rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
+            except Exception as ex:  # one bad message must not block the rest
+                log(f"scan error uid {uid}: {ex!r}")
+    if uids:
+        st.update({"uidvalidity": uv, "last_uid": max(uids)})
+    log(f"scan {box}: {len(uids)} new message(s), {stopped} thread(s) stopped")
 
 
 def scan_replies_full(con, cfg) -> None:
