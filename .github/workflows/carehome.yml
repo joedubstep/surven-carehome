@@ -14,8 +14,11 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "run | dry | stats | status"
+        description: "run | dry | stats | status | seed"
         default: run
+      to:
+        description: "seed only: test inboxes, space separated"
+        default: ""
 
 concurrency:
   group: carehome
@@ -65,9 +68,12 @@ jobs:
       - name: Nightly stats
         if: steps.pick.outputs.task == 'stats'
         run: python -m surven_outreach.carehome_stats 2>&1 | tee -a data/carehome/stats_task.log
+      - name: Inbox placement test (sends to test inboxes only)
+        if: steps.pick.outputs.task == 'seed'
+        run: python tools/seed_test.py ${{ github.event.inputs.to }}
       - name: Status
         if: steps.pick.outputs.task == 'status'
         run: python -m surven_outreach.carehome status | tail -n 40
       - name: Save state
-        if: always() && steps.pick.outputs.task != 'dry'
+        if: always() && steps.pick.outputs.task != 'dry' && steps.pick.outputs.task != 'seed'
         run: python tools/cloud_state.py save-cloud
