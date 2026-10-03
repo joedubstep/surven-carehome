@@ -278,6 +278,35 @@ def _ghl_sms(text: str) -> bool:
         return False
 
 
+GHL_LOCATION = "EeadFhXhDOJ1DWE4ArhK"  # Surven HQ
+GHL_TAGS = ["cold email sept 2026", "\U0001F3E2 business (not a person)", "assisted living"]
+
+
+def ghl_add_reply(facility: str, name: str, email_addr: str, said: str, phone: str = "") -> str:
+    """10/3: every cold email reply becomes a GHL contact tagged "cold email sept 2026" with the reply as a note,
+    so its calls, meetings and sale show up on the sales dashboard under the cold email channel."""
+    import subprocess
+    from . import secrets_store
+    tok = secrets_store.get("GHL_PIT")
+
+    def call(path, body):
+        r = subprocess.run(["curl", "-s", "-X", "POST", "https://services.leadconnectorhq.com" + path,
+                            "-H", "Authorization: Bearer " + tok, "-H", "Version: 2021-07-28",
+                            "-H", "Content-Type: application/json", "--data-binary", "@-"],
+                           input=json.dumps(body), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        return json.loads(r.stdout or "{}")
+    first, _, last = (name or "").partition(" ")
+    body = {"locationId": GHL_LOCATION, "email": email_addr, "firstName": first, "lastName": last,
+            "companyName": facility, "source": "cold email sept 2026", "tags": GHL_TAGS}
+    if phone:
+        body["phone"] = phone
+    cid = (call("/contacts/upsert", body).get("contact") or {}).get("id", "")
+    if cid:
+        call(f"/contacts/{cid}/notes", {"body": f"Cold email reply ({facility}): {said[:1500]}"})
+    log(f"ghl contact for reply {email_addr}: {cid or 'FAILED'}")
+    return cid
+
+
 def send_alert_texts() -> None:
     """Text Joey every queued reply alert. Anything that fails stays queued for the next run."""
     hour = datetime.now(ZoneInfo("America/New_York")).hour
@@ -385,6 +414,11 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
                 stopped += 1
                 notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
                 queue_alert(r, status, said, sender_name(full), sender)
+                if status == "replied":
+                    try:
+                        ghl_add_reply(r["facility"], sender_name(full), sender, said)
+                    except Exception as ex:  # GHL trouble must never block the scan
+                        log(f"ghl reply contact error: {ex!r}")
                 rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
             except Exception as ex:  # one bad message must not block the rest
                 log(f"scan error uid {uid}: {ex!r}")
