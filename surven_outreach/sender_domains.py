@@ -8,7 +8,8 @@ Usage: python -m surven_outreach.sender_domains [setup|check]"""
 import base64, json, os, re, secrets, sys, urllib.request
 
 DOMAINS = ["getsurven.xyz", "trysurven.xyz", "survenoccupancy.xyz", "survenhq.xyz",
-           "joinsurven.xyz", "meetsurven.xyz", "gosurven.xyz", "usesurven.xyz"]
+           "joinsurven.xyz", "meetsurven.xyz", "gosurven.xyz", "usesurven.xyz",
+           "survenoccupancy.com"]  # 10/4: .com test sender (the .xyz ones land in Gmail spam)
 FORWARD_TO = "survengeo@gmail.com"
 SECRETS = r"C:\Users\evann\Desktop\PIA\improvmx-senders.json"
 TEAM = "team_Llp8VPs47TdN4ch2CrL23zag"
@@ -18,7 +19,7 @@ RECORDS = [  # mirrors surven.ai's mail records
     {"name": "", "type": "TXT", "value": "v=spf1 include:spf.improvmx.com ~all"},
     {"name": "dkimprovmx1._domainkey", "type": "CNAME", "value": "dkimprovmx1.improvmx.com"},
     {"name": "dkimprovmx2._domainkey", "type": "CNAME", "value": "dkimprovmx2.improvmx.com"},
-    {"name": "_dmarc", "type": "TXT", "value": "v=DMARC1; p=none; rua=mailto:survengeo@gmail.com"},
+    {"name": "_dmarc", "type": "TXT", "value": "v=DMARC1; p=none"},
 ]
 
 
