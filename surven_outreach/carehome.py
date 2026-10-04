@@ -113,7 +113,8 @@ def load_senders(cfg) -> dict:
             continue
         age = (date.today() - date.fromisoformat(m["ready_on"])).days
         cap = next(c for d, c in RAMP if age < d)
-        out[addr] = {"password": pw[addr], "cap_total": cap, "cap_new": cap}
+        # 10/4 (Joey): .xyz lands in Gmail spam, so .xyz addresses only finish the threads they started
+        out[addr] = {"password": pw[addr], "cap_total": cap, "cap_new": 0 if addr.endswith(".xyz") else cap}
     return out
 
 
