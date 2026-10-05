@@ -60,7 +60,7 @@ jobs:
           fi
           echo "task=$T" >> "$GITHUB_OUTPUT"
       - name: Campaign run
-        if: steps.pick.outputs.task == 'run'
+        if: steps.pick.outputs.task == 'run' || steps.pick.outputs.task == 'stats'  # stats nights also scan replies
         run: python -m surven_outreach.carehome run 2>&1 | tee -a data/carehome/task.log
       - name: Dry run (sends nothing)
         if: steps.pick.outputs.task == 'dry'

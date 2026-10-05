@@ -63,6 +63,8 @@ RUN_BUDGET = 27 * 60   # seconds; a run's last send starts before the next 30-mi
 # 9/29: GitHub can start scheduled runs late or drop them when busy. A cloud run that comes 20+ minutes after the
 # last one (or after 7 AM ET) catches up: up to 6 sends per sender, 2-5 min apart, so late runs don't cut the day.
 LAST_RUN_FILE = ROOT / "data" / "carehome" / "last_run.json"
+TITLE_NAMES = {"lvn", "rn", "lpn", "cna", "bsn", "msn", "np", "md", "dr", "mr", "mrs", "ms", "owner", "admin",
+               "administrator", "manager", "director"}
 FREEMAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com", "msn.com", "live.com", "comcast.net"}
 
 SCHEMA = """
@@ -543,7 +545,11 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
 
 
 def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) -> None:
-    em = p["emails"][str(step)]
+    em = dict(p["emails"][str(step)])
+    # 10/4: some state lists put a title in the name field ("LVN", "Ms"), so Greens Haven got "Hey Lvn,". Drop it.
+    if (r["first_name"] or "").strip().lower() in TITLE_NAMES:
+        import re
+        em["body"] = re.sub(rf"^(Hey|Hi|Hello) {re.escape(r['first_name'].strip())},", "Hi,", em["body"], flags=re.I)
     domain = from_addr.split("@")[-1]
     mid = new_message_id(domain, seed=f"carehome-{r['id']}-{step}")
     if step == 1:
