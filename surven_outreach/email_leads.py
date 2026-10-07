@@ -12,8 +12,10 @@ Every step is safe to run twice: the contact is upserted by email, a code is ass
 made only when the contact has none in this pipeline.
 
 Phone and website are never guessed:
-  - phone: the facility's own number from its state license list, matched by license id (data/carehome/lead_facts.json,
-    built by build/lead_facts.py from build/license_phones.py). Nothing found means "not found", never a nearby number.
+  - phone, in this order: a number they wrote in the reply itself ("call my cell 916-600-0734"), then a phone already
+    on the contact (Joey may have fixed it by hand), then the facility's own number from its state license list,
+    matched by license id (data/carehome/lead_facts.json, built by build/lead_facts.py from build/license_phones.py).
+    Nothing found means "not found", never a nearby number.
   - website: the state list's website when it has one, else the replier's business email domain, but only after the
     page itself is fetched and names the facility, its city or its phone. Free mail (gmail...) gives no website.
 """
@@ -60,6 +62,16 @@ def _facts(pid: str) -> dict:
         return json.load(open(FACTS, encoding="utf-8")).get(pid) or {}
     except (OSError, ValueError):
         return {}
+
+
+PHONE_IN_TEXT = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?([2-9]\d{2})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})(?!\d)")
+
+
+def phone_in_reply(said: str) -> str:
+    """A US number written in the reply itself, as +1XXXXXXXXXX, or "". Only the newest text, so a quoted signature
+    of ours never counts (new_text already cut the quoted part)."""
+    m = PHONE_IN_TEXT.search(said or "")
+    return f"+1{m.group(1)}{m.group(2)}{m.group(3)}" if m else ""
 
 
 def pretty_phone(e164: str) -> str:
@@ -126,7 +138,6 @@ def prepare(item: dict) -> dict:
     if not email:
         raise ValueError("no replier email")
     facts = _facts(item["id"])
-    phone = facts.get("phone", "")
     website = item.get("website") if "website" in item else find_website(item["id"], email, item.get("facility", ""))
     name = (item.get("from_name") or "").strip()
     first, _, last = name.partition(" ")
@@ -134,8 +145,6 @@ def prepare(item: dict) -> dict:
             "source": "cold email sept 2026", "tags": TAGS}
     if first:
         body.update({"firstName": first, "lastName": last})
-    if phone:
-        body["phone"] = phone
     if website:
         body["website"] = website
     up = _ghl("POST", "/contacts/upsert", body)
@@ -145,6 +154,12 @@ def prepare(item: dict) -> dict:
         raise RuntimeError(f"contact upsert failed: {json.dumps(up)[:200]}")
     contact = (_ghl("GET", f"/contacts/{cid}").get("contact") or contact)
     _ghl("POST", f"/contacts/{cid}/tags", {"tags": TAGS})
+    # The phone to call: what they wrote, else what is already saved, else the state license list's facility phone.
+    phone = phone_in_reply(item.get("said", "")) or contact.get("phone") or facts.get("phone", "")
+    if phone and phone != contact.get("phone"):
+        put = _ghl("PUT", f"/contacts/{cid}", {"phone": phone})
+        if not (put.get("contact") or put.get("succeded")):
+            raise RuntimeError(f"phone save failed: {json.dumps(put)[:200]}")
     # The code: the one already on the contact (it never changes), else the next free number.
     n = _code_of(contact) or _GIVEN.get(email) or (max(_taken_codes() or {0}) + 1)
     _GIVEN[email] = n

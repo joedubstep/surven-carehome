@@ -39,7 +39,9 @@ class FakeGHL:
         if path.startswith("/contacts/"):
             c = self.contacts[path.split("/")[2]]
             if method == "PUT":
-                for f in body["customFields"]:
+                if "phone" in body:
+                    c["phone"] = body["phone"]
+                for f in body.get("customFields", []):
                     c["customFields"] = [x for x in c["customFields"] if x["id"] != f["id"]] + [{"id": f["id"], "value": f["field_value"]}]
                 return {"contact": dict(c), "succeded": True}
             return {"contact": dict(c)}
@@ -185,3 +187,18 @@ def test_old_queue_lines_without_facts_still_send(world):
     world["tmp"].joinpath("pending.jsonl").write_text(json.dumps({"at": "x", "id": "y", "email": "z", "msg": "Cold email reply: old"}) + "\n")
     ch.send_alert_texts()
     assert world["sent"] == ["Cold email reply: old"]
+
+
+def test_a_number_they_write_in_the_reply_beats_the_license_list(world):
+    reply("tx-greens-haven-112104", "danielle@ciminocare.com", "Grand River Villa", "Luceli left. My cell (916)600-0734 is 24/7", "Danielle Lombardi")
+    ch.send_alert_texts()
+    c = next(iter(world["g"].contacts.values()))
+    assert c["phone"] == "+19166000734" and "Phone: (916) 600-0734" in world["sent"][0]
+
+
+def test_a_phone_joey_already_saved_is_never_overwritten(world):
+    g = world["g"]
+    g.contacts["c1"] = {"id": "c1", "email": "sjdn39love@gmail.com", "tags": [], "customFields": [], "phone": "+19404587787"}
+    reply("tx-greens-haven-112104", "sjdn39love@gmail.com", "Greens Haven", "Yes please", "Shannon Green")
+    ch.send_alert_texts()
+    assert g.contacts["c1"]["phone"] == "+19404587787" and "Phone: (940) 458-7787" in world["sent"][0]
