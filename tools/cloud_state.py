@@ -20,7 +20,7 @@ BASE = "data/carehome/"
 CLOUD_OWNED = ["carehome.db", "senders.json", "scan_state.json", "last_run.json", "alerts_pending.jsonl", "alerts_inflight.jsonl",
                "alerts_sent.jsonl", "run.log", "task.log", "stats.log", "stats_task.log", "stats_notion_map.json",
                "build/notion_map.json"]
-LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.json", "build/prospects.json",
+LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.json", "lead_facts.json", "build/prospects.json",
                "build/notion_sync.py"]
 LOGS = {"run.log", "task.log", "stats.log", "stats_task.log"}
 

@@ -221,9 +221,10 @@ ALERTS_INFLIGHT = LOG.parent / "alerts_inflight.jsonl"
 ALERTS_SENT = LOG.parent / "alerts_sent.jsonl"
 
 
-def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str = "") -> None:
+def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str = "", again: bool = False) -> None:
     """The whole reply goes to Joey (reply_text.py says why), with who really wrote it. When someone other than the
-    person we emailed answers (a coworker, a new manager), the alert names both."""
+    person we emailed answers (a coworker, a new manager), the alert names both. 10/6: a reply also carries the facts
+    email_leads.py needs to make the replier an E code lead, and the text is built when it goes out."""
     emailed = r["first_name"] or ""
     other = bool(from_addr) and from_addr.lower() != (r["email"] or "").lower()
     who = from_name or emailed or "Someone"
@@ -234,7 +235,9 @@ def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str =
         said = said[:900].rsplit(" ", 1)[0] + "..."
     msg = (f"Opt-out: {who} at {r['facility']}. Thread stopped. They wrote:\n\"{said}\"" if status == "opted_out"
            else f"Cold email reply: {who} at {r['facility']} wrote:\n\"{said}\"\nCall them now.")
-    rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": r["id"], "email": r["email"], "msg": msg[:1400]}
+    rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": r["id"], "email": r["email"], "msg": msg[:1400],
+           "status": status, "said": said, "from_name": from_name, "from_email": from_addr or r["email"],
+           "first_name": r["first_name"] or "", "facility": r["facility"], "again": again}
     with open(ALERTS_PENDING, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -281,47 +284,49 @@ def _ghl_sms(text: str) -> bool:
         return False
 
 
-GHL_LOCATION = "EeadFhXhDOJ1DWE4ArhK"  # Surven HQ
-GHL_TAGS = ["cold email sept 2026", "\U0001F3E2 business (not a person)", "assisted living"]
-
-
-def ghl_add_reply(facility: str, name: str, email_addr: str, said: str, phone: str = "") -> str:
-    """10/3: every cold email reply becomes a GHL contact tagged "cold email sept 2026" with the reply as a note,
-    so its calls, meetings and sale show up on the sales dashboard under the cold email channel."""
-    import subprocess
-    from . import secrets_store
-    tok = secrets_store.get("GHL_PIT")
-
-    def call(path, body):
-        r = subprocess.run(["curl", "-s", "-X", "POST", "https://services.leadconnectorhq.com" + path,
-                            "-H", "Authorization: Bearer " + tok, "-H", "Version: 2021-07-28",
-                            "-H", "Content-Type: application/json", "--data-binary", "@-"],
-                           input=json.dumps(body), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
-        return json.loads(r.stdout or "{}")
-    first, _, last = (name or "").partition(" ")
-    body = {"locationId": GHL_LOCATION, "email": email_addr, "firstName": first, "lastName": last,
-            "companyName": facility, "source": "cold email sept 2026", "tags": GHL_TAGS}
-    if phone:
-        body["phone"] = phone
-    cid = (call("/contacts/upsert", body).get("contact") or {}).get("id", "")
-    if cid:
-        call(f"/contacts/{cid}/notes", {"body": f"Cold email reply ({facility}): {said[:1500]}"})
-    log(f"ghl contact for reply {email_addr}: {cid or 'FAILED'}")
-    return cid
-
-
 def send_alert_texts() -> None:
-    """Text Joey every queued reply alert. Anything that fails stays queued for the next run."""
-    hour = datetime.now(ZoneInfo("America/New_York")).hour
-    if hour >= QUIET[0] or hour < QUIET[1]:
-        return
+    """Work every queued reply alert, one at a time, each kept until it is fully done (10/6):
+    1. a reply becomes an E code lead in GoHighLevel (email_leads.prepare), at any hour, retried every run until it works;
+    2. Joey gets the text (what they wrote, phone, website, the E code), not between 10 PM and 7 AM Eastern;
+    3. if GoHighLevel was down when the text went, a short "E3 is ready" text follows once the lead exists.
+    A text that went out is never sent again; nothing is dropped until all of it is done."""
     if not (ALERTS_PENDING.exists() or ALERTS_INFLIGHT.exists()):
         return
     cmd_alerts(ack=False, quiet=True)  # moves pending into inflight
-    lines = [json.loads(l)["msg"] for l in ALERTS_INFLIGHT.read_text(encoding="utf-8").splitlines() if l.strip()]
-    if lines and all(_ghl_sms(m) for m in lines):
-        cmd_alerts(ack=True)
-        log(f"texted Joey {len(lines)} reply alert(s)")
+    items = [json.loads(l) for l in ALERTS_INFLIGHT.read_text(encoding="utf-8").splitlines() if l.strip()]
+    hour = datetime.now(ZoneInfo("America/New_York")).hour
+    night = hour >= QUIET[0] or hour < QUIET[1]
+    from . import email_leads
+    done, keep = [], []
+    for it in items:
+        lead_kind = it.get("status") == "replied" and "said" in it
+        if lead_kind and not it.get("lead"):
+            try:
+                it["lead"] = email_leads.prepare(it)
+                it["noted"] = True
+                log(f"email lead {it['id']}: {it['lead']['code']} phone={'yes' if it['lead']['phone'] else 'no'} site={'yes' if it['lead']['website'] else 'no'}")
+            except Exception as ex:
+                it["tries"] = it.get("tries", 0) + 1
+                log(f"email lead {it['id']} not made yet (try {it['tries']}): {ex!r}"[:300])
+        if not night and not it.get("texted"):
+            msg = email_leads.alert_text(it, it.get("lead")) if lead_kind else it["msg"]
+            if _ghl_sms(msg):
+                it["texted"], it["texted_code"] = True, bool(it.get("lead"))
+        if not night and it.get("texted") and it.get("lead") and not it.get("texted_code"):
+            ld = it["lead"]
+            who = email_leads.short_name(it.get("from_name", ""), it.get("first_name") or "Owner")
+            if _ghl_sms(f"{ld['code']}. {who}, {it.get('facility', '')} is ready. Reply \"{ld['code']}\" to call."):
+                it["texted_code"] = True
+        finished = it.get("texted") and (not lead_kind or (it.get("lead") and it.get("texted_code")))
+        (done if finished else keep).append(it)
+    if done:
+        with open(ALERTS_SENT, "a", encoding="utf-8") as f:
+            f.writelines(json.dumps(it) + "\n" for it in done)
+        log(f"texted Joey {len(done)} reply alert(s)")
+    if keep:
+        ALERTS_INFLIGHT.write_text("".join(json.dumps(it) + "\n" for it in keep), encoding="utf-8")
+    else:
+        ALERTS_INFLIGHT.unlink()
 
 
 SCAN_STATE = LOG.parent / "scan_state.json"
@@ -334,7 +339,7 @@ def scan_replies(con, cfg) -> None:
     thread by In-Reply-To/References, then exact address, then the business domain when only one live thread uses it.
     Same outcomes as before: bounce -> 'bounced'; human reply -> 'replied' or 'opted_out', alert + text to Joey."""
     from email.utils import parseaddr, parsedate_to_datetime
-    rows = {r["id"]: r for r in con.execute("SELECT * FROM prospects WHERE status IN ('active','completed')")}
+    rows = {r["id"]: r for r in con.execute("SELECT * FROM prospects WHERE status IN ('active','completed','replied')")}
     first = {pid: datetime.fromisoformat(t) for pid, t in
              con.execute("SELECT prospect_id, MIN(sent_at) FROM sends GROUP BY prospect_id") if pid in rows}
     by_mid = {(m or "").strip("<> ").lower(): pid for pid, m in con.execute("SELECT prospect_id, message_id FROM sends") if pid in first}
@@ -362,6 +367,12 @@ def scan_replies(con, cfg) -> None:
             pass
 
 
+def _first_reply_mail(r, when) -> bool:
+    """For threads stopped before 10/7, when Message-IDs were not kept yet: mail from the day it was marked replied
+    or earlier is the first reply, not a new one."""
+    return bool(r["stopped_on"]) and r["stopped_on"][:10] < "2026-10-07" and when.date().isoformat() <= r["stopped_on"][:10]
+
+
 def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) -> None:
     import re
     st = state.setdefault(box, {})
@@ -377,7 +388,7 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
     for i in range(0, len(uids), 200):
         chunk = uids[i:i + 200]
         _, data = c.uid("fetch", ",".join(map(str, chunk)),
-                        "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT IN-REPLY-TO REFERENCES AUTO-SUBMITTED PRECEDENCE X-AUTOREPLY)])")
+                        "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES AUTO-SUBMITTED PRECEDENCE X-AUTOREPLY)])")
         for part in data:
             if not isinstance(part, tuple):
                 continue
@@ -395,7 +406,7 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
                     text = email.message_from_bytes(body[0][1]).as_string().lower()
                     for e in set(EMAIL_RE.findall(text)):
                         pid = by_email.get(e)
-                        if pid and when > first[pid] and rows[pid]["status"] in ("active", "completed"):
+                        if pid and pid in first and when > first[pid] and rows[pid]["status"] in ("active", "completed"):
                             stop(con, pid, "bounced", "bounce notice in inbox" if box == "INBOX" else "bounce notice in spam folder")
                             log(f"stop {pid}: bounced")
                             stopped += 1
@@ -405,23 +416,30 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
                 if not pid:
                     cands = by_dom.get(sender.split("@")[-1], [])
                     pid = cands[0] if len(cands) == 1 else None  # a coworker at the same business (owner forwards it)
-                if not pid or when <= first[pid] or rows[pid]["status"] not in ("active", "completed") or _is_auto(h):
+                if not pid or pid not in first or when <= first[pid] or _is_auto(h):
                     continue
                 _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
                 full = email.message_from_bytes(body[0][1])
                 said = new_text(full)
                 status = "opted_out" if is_opt_out(said) else "replied"
                 r = rows[pid]
+                # Each email alerts once, by its Message-ID, even if the scan's place is ever lost and old mail is read
+                # again (that would otherwise send every first reply back to Joey as "again").
+                mid = (h.get("Message-ID", "") or f"uid{uid}").strip()
+                seen = state.setdefault("alerted", [])
+                if mid in seen or (r["status"] == "replied" and _first_reply_mail(r, when)):
+                    continue
+                seen.append(mid)
+                del seen[:-500]
+                if r["status"] == "replied" and status == "replied":  # 10/6: they wrote again; Joey hears it, same E code
+                    queue_alert(r, status, said, sender_name(full), sender, again=True)
+                    log(f"{pid}: replied again")
+                    continue
                 stop(con, pid, status, f"reply in inbox: {said[:300]}")
                 log(f"stop {pid}: {status}")
                 stopped += 1
                 notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
                 queue_alert(r, status, said, sender_name(full), sender)
-                if status == "replied":
-                    try:
-                        ghl_add_reply(r["facility"], sender_name(full), sender, said)
-                    except Exception as ex:  # GHL trouble must never block the scan
-                        log(f"ghl reply contact error: {ex!r}")
                 rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
             except Exception as ex:  # one bad message must not block the rest
                 log(f"scan error uid {uid}: {ex!r}")
