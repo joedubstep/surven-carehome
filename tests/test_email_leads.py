@@ -98,7 +98,18 @@ def test_a_reply_becomes_an_e_code_lead_and_texts_joey_everything(world):
     assert el._code_of(c) == 1
     assert [o["pipelineStageId"] for o in g.opps] == [el.STAGE_REPLIED]
     assert len(g.notes) == 1 and "Yes please" in g.notes[0][1]
-    assert not world["tmp"].joinpath("inflight.jsonl").exists()  # done, nothing left
+    assert world["tmp"].joinpath("inflight.jsonl").read_text() == ""  # done, nothing left (emptied, not removed)
+    assert world["tmp"].joinpath("pending.jsonl").read_text() == ""
+
+
+def test_a_stale_copy_of_a_finished_alert_never_texts_twice(world):
+    # The cloud keeps files it is not sent, so the queue must be emptied in place, never removed.
+    reply("tx-greens-haven-112104", "sjdn39love@gmail.com", "Greens Haven", "Yes please", "Shannon Green")
+    ch.send_alert_texts()
+    for name in ("pending.jsonl", "inflight.jsonl"):
+        assert world["tmp"].joinpath(name).exists()
+    ch.send_alert_texts()
+    assert len(world["sent"]) == 1
 
 
 def test_business_email_site_is_used_only_when_the_page_names_the_home(world):

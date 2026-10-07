@@ -247,7 +247,7 @@ def cmd_alerts(ack: bool, quiet: bool = False) -> None:
         if ALERTS_INFLIGHT.exists():
             with open(ALERTS_SENT, "a", encoding="utf-8") as f:
                 f.write(ALERTS_INFLIGHT.read_text(encoding="utf-8"))
-            ALERTS_INFLIGHT.unlink()
+            ALERTS_INFLIGHT.write_text("", encoding="utf-8")  # emptied, never removed (see below)
         return
     if ALERTS_PENDING.exists():
         tmp = ALERTS_PENDING.with_suffix(".moving")
@@ -255,6 +255,9 @@ def cmd_alerts(ack: bool, quiet: bool = False) -> None:
         with open(ALERTS_INFLIGHT, "a", encoding="utf-8") as f:
             f.write(tmp.read_text(encoding="utf-8"))
         tmp.unlink()
+        # 10/6: the cloud's state branch never deletes a file (tools/cloud_state.py keeps what it does not get), so a
+        # removed queue file would come back next run with old alerts in it. Empty it instead of removing it.
+        ALERTS_PENDING.touch()
     if ALERTS_INFLIGHT.exists() and not quiet:
         for line in ALERTS_INFLIGHT.read_text(encoding="utf-8").splitlines():
             if line.strip():
@@ -323,10 +326,8 @@ def send_alert_texts() -> None:
         with open(ALERTS_SENT, "a", encoding="utf-8") as f:
             f.writelines(json.dumps(it) + "\n" for it in done)
         log(f"texted Joey {len(done)} reply alert(s)")
-    if keep:
-        ALERTS_INFLIGHT.write_text("".join(json.dumps(it) + "\n" for it in keep), encoding="utf-8")
-    else:
-        ALERTS_INFLIGHT.unlink()
+    # Written even when empty (never removed): see cmd_alerts on why a removed file would come back.
+    ALERTS_INFLIGHT.write_text("".join(json.dumps(it) + "\n" for it in keep), encoding="utf-8")
 
 
 SCAN_STATE = LOG.parent / "scan_state.json"
