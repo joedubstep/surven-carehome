@@ -25,6 +25,15 @@ LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.jso
 LOGS = {"run.log", "task.log", "stats.log", "stats_task.log"}
 
 
+# 10/10: the state lives in its own private repo, joedubstep/surven-carehome-state, so the code repo can be public
+# (unlimited free Actions minutes). A git remote named "state" points at it (GitHub Actions adds it with the deploy
+# key in STATE_DEPLOY_KEY; on the PC: git remote add state https://github.com/joedubstep/surven-carehome-state.git).
+# With no "state" remote it falls back to origin, the old home.
+def remote():
+    r = subprocess.run(["git", "remote"], cwd=ROOT, capture_output=True)
+    return "state" if "state" in r.stdout.decode().split() else "origin"
+
+
 def git(*args, env=None, input=None):
     r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, env={**os.environ, **(env or {})}, input=input)
     if r.returncode != 0:
@@ -35,7 +44,7 @@ def git(*args, env=None, input=None):
 def fetch():
     """-> sha of origin/state, or '' if the branch does not exist yet."""
     try:
-        git("fetch", "--quiet", "--depth=1", "origin", "+refs/heads/state:refs/remotes/origin/state")
+        git("fetch", "--quiet", "--depth=1", remote(), "+refs/heads/state:refs/remotes/origin/state")
         return git("rev-parse", "refs/remotes/origin/state").decode().strip()
     except RuntimeError:
         return ""
@@ -66,7 +75,7 @@ def publish(base_sha, blobs, msg):
         git("update-index", "--add", "--cacheinfo", f"100644,{sha},{path}", env=env)
     tree = git("write-tree", env=env).decode().strip()
     commit = git("commit-tree", tree, "-m", msg, env=env).decode().strip()
-    git("push", "--quiet", f"--force-with-lease=refs/heads/state:{base_sha}", "origin", f"{commit}:refs/heads/state")
+    git("push", "--quiet", f"--force-with-lease=refs/heads/state:{base_sha}", remote(), f"{commit}:refs/heads/state")
     os.remove(idx)
     return commit
 

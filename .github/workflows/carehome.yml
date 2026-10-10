@@ -48,6 +48,17 @@ jobs:
         run: printf '%s\n' "$DOTENV" > .env
         env:
           DOTENV: ${{ secrets.DOTENV }}
+      - name: Point at the private state repo
+        # 10/10: this repo is public (free Actions minutes); the lead db, queue and logs live in the private
+        # joedubstep/surven-carehome-state, reached with a write deploy key that only opens that one repo.
+        env:
+          STATE_DEPLOY_KEY: ${{ secrets.STATE_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$STATE_DEPLOY_KEY" > ~/.ssh/state_key && chmod 600 ~/.ssh/state_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git remote add state git@github.com:joedubstep/surven-carehome-state.git
+          git config core.sshCommand "ssh -i ~/.ssh/state_key -o IdentitiesOnly=yes"
       - name: Pull state
         run: python tools/cloud_state.py pull
       - name: Pick task
