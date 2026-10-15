@@ -9,7 +9,10 @@ import base64, json, os, re, secrets, sys, urllib.request
 
 DOMAINS = ["getsurven.xyz", "trysurven.xyz", "survenoccupancy.xyz", "survenhq.xyz",
            "joinsurven.xyz", "meetsurven.xyz", "gosurven.xyz", "usesurven.xyz",
-           "survenoccupancy.com"]  # 10/4: .com test sender (the .xyz ones land in Gmail spam)
+           "survenoccupancy.com",  # 10/4: .com test sender (the .xyz ones land in Gmail spam)
+           # 10/15: survenoccupancy.com reached the Gmail inbox by day 11, so Joey bought the .com of every .xyz name
+           "getsurven.com", "trysurven.com", "survenhq.com", "joinsurven.com", "meetsurven.com", "gosurven.com",
+           "usesurven.com"]
 FORWARD_TO = "survengeo@gmail.com"
 SECRETS = r"C:\Users\evann\Desktop\PIA\improvmx-senders.json"
 TEAM = "team_Llp8VPs47TdN4ch2CrL23zag"
@@ -77,7 +80,8 @@ def setup():
             else:
                 out.append(f"smtp ERR {r}")
         existing = vercel("GET", f"/v4/domains/{d}/records?limit=100").get("records", [])
-        keys = {(x["name"], x["type"], x["value"]) for x in existing}
+        # Vercel returns MX/CNAME values with a trailing dot, so compare without it
+        keys = {(x["name"], x["type"], x["value"].rstrip(".")) for x in existing}
         added = 0
         for rec in RECORDS:
             if (rec["name"], rec["type"], rec["value"]) in keys:
