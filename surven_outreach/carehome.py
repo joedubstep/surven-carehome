@@ -60,8 +60,8 @@ PRIMARY = "joey@surven.ai"
 SENDERS_FILE = ROOT / "data" / "carehome" / "senders.json"
 RAMP = [(3, 8), (7, 15), (14, 25), (10 ** 6, 40)]  # (days since ready, max sends/day incl. follow-ups)
 # 10/15 (Joey: "I don't want to burn these domains or burn the leads"): survenoccupancy.com sat in Gmail spam for
-# about its first 10 days, so the 7 .com names bought 10/15 send no cold email until this date. Until then they only
-# send warm-up mail to our own inbox (warmup.py). Their ramp starts on this date, not on the day DNS went live.
+# about its first 10 days, so the 7 .com names bought 10/15 send no cold email before this date, and after it only
+# once their warm-up mail reaches the inbox 3 days running (warmup.py). The ramp starts on the release day.
 HOLD_UNTIL = {f"joey@{d}": "2026-10-25" for d in ("getsurven.com", "trysurven.com", "survenhq.com", "joinsurven.com",
                                                     "meetsurven.com", "gosurven.com", "usesurven.com")}
 RUN_BUDGET = 27 * 60   # seconds; a run's last send starts before the next 30-min run
@@ -121,9 +121,13 @@ def load_senders(cfg) -> dict:
         # until they are restarted from a .com address.
         if addr == PRIMARY or not m.get("ready") or addr not in pw or addr.endswith(".xyz"):
             continue
-        start = max(date.fromisoformat(m["ready_on"]), date.fromisoformat(HOLD_UNTIL.get(addr, m["ready_on"])))
-        if date.today() < start:  # held to warm up (HOLD_UNTIL)
-            continue
+        start = date.fromisoformat(m["ready_on"])
+        if addr in HOLD_UNTIL:  # held to warm up: cold email starts only once warmup.py releases it
+            from . import warmup
+            released = warmup.release_day(addr)
+            if released is None:
+                continue
+            start = max(start, date.fromisoformat(released))
         age = (date.today() - start).days
         cap = next(c for d, c in RAMP if age < d)
         out[addr] = {"password": pw[addr], "cap_total": cap, "cap_new": cap}
