@@ -111,12 +111,14 @@ def load_senders(cfg) -> dict:
     pw = secrets_store.get("IMPROVMX_SENDERS")
     out = {PRIMARY: {"password": cfg.smtp_password, "cap_total": MAX_TOTAL_PER_DAY, "cap_new": MAX_NEW_PER_DAY}}
     for addr, m in meta.items():
-        if addr == PRIMARY or not m.get("ready") or addr not in pw:
+        # 10/15 (Joey: "stop the .xyz email so we don't burn any contacts"): .xyz lands in Gmail spam, so .xyz
+        # addresses send nothing, not even follow-ups. Their open threads wait (a thread never switches sender)
+        # until they are restarted from a .com address.
+        if addr == PRIMARY or not m.get("ready") or addr not in pw or addr.endswith(".xyz"):
             continue
         age = (date.today() - date.fromisoformat(m["ready_on"])).days
         cap = next(c for d, c in RAMP if age < d)
-        # 10/4 (Joey): .xyz lands in Gmail spam, so .xyz addresses only finish the threads they started
-        out[addr] = {"password": pw[addr], "cap_total": cap, "cap_new": 0 if addr.endswith(".xyz") else cap}
+        out[addr] = {"password": pw[addr], "cap_total": cap, "cap_new": cap}
     return out
 
 
