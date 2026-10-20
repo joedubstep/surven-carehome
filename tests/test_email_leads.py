@@ -92,7 +92,7 @@ def test_a_reply_becomes_an_e_code_lead_and_texts_joey_everything(world):
     g, sent = world["g"], world["sent"]
     assert len(sent) == 1
     assert sent[0] == ('Email reply: E1. Shannon G, Greens Haven\n"Yes please I would like to see your plan"\n'
-                       'Phone: (940) 458-7787\nSite: not found\nReply "E1" to call.')
+                       'Where: Sanger, TX\nPhone: (940) 458-7787\nSite: not found\nReply "E1" to call.')
     c = next(iter(g.contacts.values()))
     assert "email-reply" in c["tags"] and c["phone"] == "+19404587787"
     assert el._code_of(c) == 1
@@ -100,6 +100,33 @@ def test_a_reply_becomes_an_e_code_lead_and_texts_joey_everything(world):
     assert len(g.notes) == 1 and "Yes please" in g.notes[0][1]
     assert world["tmp"].joinpath("inflight.jsonl").read_text() == ""  # done, nothing left (emptied, not removed)
     assert world["tmp"].joinpath("pending.jsonl").read_text() == ""
+
+
+def test_the_text_says_care_beds_where_and_time_zone(world):
+    """10/20, Joey wanted the home itself in the text: care, beds, where, time zone."""
+    facts = json.loads(world["tmp"].joinpath("lead_facts.json").read_text())
+    facts["ga-ml-conyers-llc-alc000295"] = {"facility": "ML CONYERS, LLC", "city": "Conyers", "state": "GA",
+                                            "phone": "+17709221654", "website": "", "address": "1352 WELLBROOK CIR, CONYERS, GA 30012",
+                                            "beds": 70, "beds_word": "beds", "care": "assisted living community, memory care",
+                                            "tz": "America/New_York", "census": None, "open_beds": None, "census_date": ""}
+    world["tmp"].joinpath("lead_facts.json").write_text(json.dumps(facts))
+    reply("ga-ml-conyers-llc-alc000295", "dlittle3@mindspring.com", "Ml Conyers", "yes", first="")
+    ch.send_alert_texts()
+    text = world["sent"][0]
+    assert "\nCare: assisted living community, memory care\nBeds: 70\nWhere: 1352 Wellbrook Cir, Conyers, GA 30012\nTime: Eastern, " in text
+    assert text.endswith('Phone: (770) 922-1654\nSite: not found\nReply "E1" to call.')
+
+
+def test_community_lines_units_census_and_gaps():
+    from datetime import datetime, timezone
+    f = {"care": "certified assisted living residence", "beds": 50, "beds_word": "units", "open_beds": 4,
+         "census_date": "08/20/2026", "address": "157 Herrick Road, Newton, MA", "state": "MA", "tz": "America/Chicago"}
+    lines = el.community_lines(f, now=datetime(2026, 10, 20, 15, 5, tzinfo=timezone.utc))
+    assert lines == ["Care: certified assisted living residence", "Units: 50 (4 open at the 08/20/2026 state visit)",
+                     "Where: 157 Herrick Road, Newton, MA", "Time: Central, 10:05 AM there now"]
+    assert el.community_lines({}) == []  # nothing known, nothing said
+    assert el.nice_address("388 12TH STREET, OAKLAND, CA 94607", "CA") == "388 12th Street, Oakland, CA 94607"
+    assert el.nice_address("8300 SW BARNES RD, PORTLAND, OR 97225", "OR") == "8300 SW Barnes Rd, Portland, OR 97225"
 
 
 def test_a_stale_copy_of_a_finished_alert_never_texts_twice(world):

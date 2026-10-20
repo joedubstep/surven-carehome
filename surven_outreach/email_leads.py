@@ -25,6 +25,7 @@ import subprocess
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import secrets_store
 
@@ -190,6 +191,50 @@ def short_name(name: str, fallback: str) -> str:
     return f"{parts[0]} {parts[-1][0]}" if len(parts) > 1 else parts[0]
 
 
+TZ_NAMES = {"America/New_York": "Eastern", "America/Detroit": "Eastern", "America/Chicago": "Central",
+            "America/Denver": "Mountain", "America/Boise": "Mountain", "America/Phoenix": "Arizona",
+            "America/Los_Angeles": "Pacific", "America/Anchorage": "Alaska", "Pacific/Honolulu": "Hawaii"}
+DIRECTIONS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+
+
+def nice_address(a: str, state: str = "") -> str:
+    """State lists often shout ("1352 WELLBROOK CIR, CONYERS, GA 30012"). Only an all-caps address is changed."""
+    a = re.sub(r"\s+,", ",", (a or "").strip())
+    if not a or a != a.upper():
+        return a
+    def word(w):
+        core = w.strip(",.")
+        if core in DIRECTIONS or (state and core == state) or core.isdigit():
+            return w
+        if re.fullmatch(r"\d+(ST|ND|RD|TH)", core):
+            return w.lower()
+        return w.capitalize()
+    return " ".join(word(w) for w in a.split())
+
+
+def community_lines(f: dict, now: datetime | None = None) -> list:
+    """10/20, Joey: "more information on their community... what kind of care they provide, how many beds there are,
+    where they're located, and their time zone". Only what the state license list said; a missing fact is left out."""
+    out = []
+    if f.get("care"):
+        out.append(f"Care: {f['care']}")
+    if f.get("beds"):
+        beds = f"Beds: {f['beds']}" if f.get("beds_word", "beds") == "beds" else f"Units: {f['beds']}"
+        if f.get("open_beds") is not None and f.get("census_date"):
+            beds += f" ({f['open_beds']} open at the {f['census_date']} state visit)"
+        out.append(beds)
+    where = nice_address(f.get("address", ""), f.get("state", "")) or ", ".join(x for x in (f.get("city"), f.get("state")) if x)
+    if where:
+        out.append(f"Where: {where}")
+    if f.get("tz"):
+        try:
+            local = (now or datetime.now(ZoneInfo("UTC"))).astimezone(ZoneInfo(f["tz"]))
+            out.append(f"Time: {TZ_NAMES.get(f['tz'], f['tz'])}, {local.strftime('%I:%M %p').lstrip('0')} there now")
+        except Exception:
+            out.append(f"Time: {TZ_NAMES.get(f['tz'], f['tz'])}")
+    return out
+
+
 def alert_text(item: dict, lead: dict | None) -> str:
     """Joey's text, in the agent's own shape ("Call now: 20. Iivory W ... Reply "20" to call.")."""
     who = short_name(item.get("from_name", ""), item.get("first_name") or "Owner")
@@ -200,8 +245,9 @@ def alert_text(item: dict, lead: dict | None) -> str:
         said = said[:700].rsplit(" ", 1)[0] + "..."
     phone = pretty_phone((lead or {}).get("phone", "")) or "not found"
     site = re.sub(r"^https?://(www\.)?", "", (lead or {}).get("website", "")).rstrip("/") or "not found"
-    lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\"",
-             f"Phone: {phone}", f"Site: {site}"]
+    lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\""]
+    lines += community_lines(_facts(item.get("id", "")))
+    lines += [f"Phone: {phone}", f"Site: {site}"]
     if not code:
         lines.append("Call code coming, GoHighLevel did not answer. Texting it when it does.")
     elif phone == "not found":
