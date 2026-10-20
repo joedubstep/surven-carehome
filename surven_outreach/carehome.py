@@ -12,6 +12,7 @@ Commands (run from C:\\dev\\surven-outreach with the venv python):
     python -m surven_outreach.carehome status    # print what is sent / due / stopped
     python -m surven_outreach.carehome run       # scan replies, then send what is due now
     python -m surven_outreach.carehome run --dry # show what would send, send nothing
+    python -m surven_outreach.carehome rescue-spam [--dry]  # move leads' mail out of Gmail Spam into the inbox
 """
 
 import argparse
@@ -347,12 +348,51 @@ def send_alert_texts() -> None:
 SCAN_STATE = LOG.parent / "scan_state.json"
 BOUNCE_FROM = ("mailer-daemon", "postmaster", "bounces.improvmx.net")  # 9/25: ImprovMX bounces come from the last one
 EMAIL_RE = __import__("re").compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+SPAM = "[Gmail]/Spam"
+
+
+def _lead_maps(con) -> dict:
+    """Every home we have emailed, whatever its status now (a second reply after an opt-out is still a lead's mail):
+    our Message-IDs, their address, their business domain, and when we first wrote to them."""
+    first = {pid: datetime.fromisoformat(t) for pid, t in
+             con.execute("SELECT prospect_id, MIN(sent_at) FROM sends GROUP BY prospect_id")}
+    mid = {m.strip("<> ").lower(): pid for pid, m in con.execute("SELECT prospect_id, message_id FROM sends")
+           if m and pid in first}
+    addr, dom = {}, {}
+    for pid, e in con.execute("SELECT id, email FROM prospects"):
+        if pid in first and e:
+            e = e.lower()
+            addr[e] = pid
+            if e.split("@")[-1] not in FREEMAIL:
+                dom.setdefault(e.split("@")[-1], []).append(pid)
+    return {"first": first, "mid": mid, "email": addr, "dom": dom}
+
+
+def _lead_of(leads, refs, sender, when):
+    """The home a mail comes from, or None: it answers one of our emails, or it comes from a home's address or business
+    domain, after we first wrote to that home."""
+    pids = [leads["mid"][x.lower()] for x in refs if x.lower() in leads["mid"]]
+    pids += [leads["email"][sender]] if sender in leads["email"] else []
+    pids += leads["dom"].get(sender.split("@")[-1], [])
+    return next((p for p in pids if when > leads["first"][p]), None)
+
+
+def _to_inbox(c, uid):
+    """Move one message from the selected Spam folder to the inbox. Gmail treats that as "Not spam", so it also
+    teaches the filter. -> None when moved, else what went wrong (never raises)."""
+    try:
+        typ, data = c.uid("MOVE", str(uid), "INBOX")
+        return None if typ == "OK" else f"{typ} {data!r}"[:200]
+    except Exception as ex:
+        return repr(ex)[:200]
 
 
 def scan_replies(con, cfg) -> None:
     """9/29 incremental scan: reads only inbox mail that arrived since the last run (by IMAP UID) and matches it to a
     thread by In-Reply-To/References, then exact address, then the business domain when only one live thread uses it.
-    Same outcomes as before: bounce -> 'bounced'; human reply -> 'replied' or 'opted_out', alert + text to Joey."""
+    Same outcomes as before: bounce -> 'bounced'; human reply -> 'replied' or 'opted_out', alert + text to Joey.
+    10/20 (Joey: "I would like any email reply from a lead to be in my main [inbox]"): a lead's own mail found in
+    Spam is moved to the inbox once it is read. Bounce notices and everyone else's mail stay where they are."""
     from email.utils import parseaddr, parsedate_to_datetime
     rows = {r["id"]: r for r in con.execute("SELECT * FROM prospects WHERE status IN ('active','completed','replied')")}
     first = {pid: datetime.fromisoformat(t) for pid, t in
@@ -372,8 +412,9 @@ def scan_replies(con, cfg) -> None:
     c.login(cfg.imap_user, cfg.imap_password)
     try:
         # 10/3: Gmail put 13 ImprovMX bounce notices in Spam, so the scan missed them. Read Spam too.
-        for box in ("INBOX", "[Gmail]/Spam"):
-            _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom)
+        leads = _lead_maps(con)
+        for box in ("INBOX", SPAM):
+            _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom, leads)
         json.dump(state, open(SCAN_STATE, "w"))
     finally:
         try:
@@ -388,10 +429,10 @@ def _first_reply_mail(r, when) -> bool:
     return bool(r["stopped_on"]) and r["stopped_on"][:10] < "2026-10-07" and when.date().isoformat() <= r["stopped_on"][:10]
 
 
-def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) -> None:
+def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom, leads=None) -> None:
     import re
     st = state.setdefault(box, {})
-    c.select(f'"{box}"', readonly=True)
+    c.select(f'"{box}"', readonly=box != SPAM)  # Spam is opened writable so a lead's mail can be moved out
     uv = (c.untagged_responses.get("UIDVALIDITY") or [b"0"])[0].decode()
     if st.get("uidvalidity") == uv and st.get("last_uid"):
         _, d = c.uid("search", None, f"UID {int(st['last_uid']) + 1}:*")
@@ -399,7 +440,7 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
         _, d = c.uid("search", None, "SINCE", "22-Sep-2026")
     uids = [int(u) for u in (d[0].split() if d and d[0] else [])]
     uids = [u for u in uids if u > int(st.get("last_uid") or 0) or st.get("uidvalidity") != uv]
-    stopped = 0
+    stopped = moved = 0
     for i in range(0, len(uids), 200):
         chunk = uids[i:i + 200]
         _, data = c.uid("fetch", ",".join(map(str, chunk)),
@@ -415,6 +456,7 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
             sender = parseaddr(h.get("From", ""))[1].lower()
             if not sender or when is None:
                 continue
+            lead = None  # set when this is a lead's own mail sitting in Spam; moved to the inbox in `finally`
             try:
                 if any(b in sender for b in BOUNCE_FROM):
                     _, body = c.uid("fetch", str(uid), "(BODY.PEEK[])")
@@ -427,6 +469,8 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
                             stopped += 1
                     continue
                 refs = re.findall(r"<([^>]+)>", (h.get("In-Reply-To", "") or "") + " " + (h.get("References", "") or ""))
+                if box == SPAM and leads and not _is_auto(h):
+                    lead = _lead_of(leads, refs, sender, when)
                 pid = next((by_mid[x.lower()] for x in refs if x.lower() in by_mid), None) or by_email.get(sender)
                 if not pid:
                     cands = by_dom.get(sender.split("@")[-1], [])
@@ -458,9 +502,68 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom) ->
                 rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
             except Exception as ex:  # one bad message must not block the rest
                 log(f"scan error uid {uid}: {ex!r}")
+            finally:  # runs after a stop, a repeat, an already-alerted mail, or an error reading it
+                if lead:
+                    err = _to_inbox(c, uid)
+                    moved += err is None
+                    log(f"spam: moved uid {uid} ({lead}) to the inbox" if err is None else
+                        f"spam: could not move uid {uid} ({lead}) to the inbox: {err}")
     if uids:
         st.update({"uidvalidity": uv, "last_uid": max(uids)})
     log(f"scan {box}: {len(uids)} new message(s), {stopped} thread(s) stopped")
+    if moved:
+        log(f"scan {box}: {moved} lead message(s) moved to the inbox")
+
+
+def rescue_spam(con, cfg, dry: bool = False) -> list:
+    """10/20 cleanup, safe to run again (`carehome rescue-spam [--dry]`): every message in Gmail Spam from a home we
+    emailed (its address, its business domain, or an answer to one of our emails), auto-replies included, goes to the
+    inbox. Bounce notices and everyone else's mail stay. Only reads the db; prints each message, writes no log."""
+    import re
+    from email.header import decode_header, make_header
+    leads = _lead_maps(con)
+    facility = {pid: f for pid, f in con.execute("SELECT id, facility FROM prospects")}
+    c = imaplib.IMAP4_SSL(cfg.imap_host, timeout=60)
+    c.login(cfg.imap_user, cfg.imap_password)
+    out = []
+    try:
+        c.select(f'"{SPAM}"', readonly=dry)
+        _, d = c.uid("search", None, "ALL")
+        uids = [int(u) for u in (d[0].split() if d and d[0] else [])]
+        found = []
+        for i in range(0, len(uids), 200):
+            _, data = c.uid("fetch", ",".join(map(str, uids[i:i + 200])),
+                            "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE IN-REPLY-TO REFERENCES)])")
+            for part in data:
+                if not isinstance(part, tuple):
+                    continue
+                uid = int(re.search(r"UID (\d+)", part[0].decode(errors="ignore")).group(1))
+                when = imaplib.Internaldate2tuple(part[0])
+                h = email.message_from_bytes(part[1])
+                sender = parseaddr(h.get("From", ""))[1].lower()
+                if not sender or not when or any(b in sender for b in BOUNCE_FROM):
+                    continue
+                refs = re.findall(r"<([^>]+)>", (h.get("In-Reply-To", "") or "") + " " + (h.get("References", "") or ""))
+                pid = _lead_of(leads, refs, sender, datetime.fromtimestamp(time.mktime(when)).astimezone())
+                if pid:
+                    try:
+                        subject = str(make_header(decode_header(h.get("Subject", "") or "")))
+                    except Exception:
+                        subject = h.get("Subject", "") or ""
+                    found.append({"uid": uid, "from": sender, "subject": subject, "date": h.get("Date", ""),
+                                  "id": pid, "facility": facility.get(pid, "")})
+        for m in found:  # moved after the fetch loop, so no message shifts under a fetch in progress
+            m["moved"] = False if dry else _to_inbox(c, m["uid"]) is None
+            print(f"{'would move' if dry else 'moved' if m['moved'] else 'COULD NOT MOVE'}: {m['from']} | {m['subject']} | "
+                  f"{m['date']} | {m['facility']}")
+            out.append(m)
+        print(f"spam: {len(uids)} message(s), {len(found)} from leads, {sum(m['moved'] for m in out)} moved to the inbox")
+    finally:
+        try:
+            c.logout()
+        except Exception:
+            pass
+    return out
 
 
 def scan_replies_full(con, cfg) -> None:
@@ -706,12 +809,16 @@ def cmd_status(con) -> None:
 def main(argv=None) -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="carehome")
-    ap.add_argument("cmd", choices=["load", "run", "status", "backfill-sent", "alerts", "alert-texts", "rescan"])
+    ap.add_argument("cmd", choices=["load", "run", "status", "backfill-sent", "alerts", "alert-texts", "rescan",
+                                    "rescue-spam"])
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--ack", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "alerts":
         cmd_alerts(a.ack)
+        return
+    if a.cmd == "rescue-spam":  # read-only on the db (it is cloud-owned)
+        rescue_spam(sqlite3.connect(DB.resolve().as_uri() + "?mode=ro", uri=True), load_config(), a.dry)
         return
     if a.cmd == "alert-texts":
         send_alert_texts()
