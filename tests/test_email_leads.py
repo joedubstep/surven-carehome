@@ -92,7 +92,7 @@ def test_a_reply_becomes_an_e_code_lead_and_texts_joey_everything(world):
     g, sent = world["g"], world["sent"]
     assert len(sent) == 1
     assert sent[0] == ('Email reply: E1. Shannon G, Greens Haven\n"Yes please I would like to see your plan"\n'
-                       'Where: Sanger, TX\nPhone: (940) 458-7787\nSite: not found\nReply "E1" to call.')
+                       'Where: Sanger, TX\nPhone: (940) 458-7787\n(from state license)\nSite: not found\nReply "E1" to call.')
     c = next(iter(g.contacts.values()))
     assert "email-reply" in c["tags"] and c["phone"] == "+19404587787"
     assert el._code_of(c) == 1
@@ -114,7 +114,16 @@ def test_the_text_says_care_beds_where_and_time_zone(world):
     ch.send_alert_texts()
     text = world["sent"][0]
     assert "\nCare: assisted living community, memory care\nBeds: 70\nWhere: 1352 Wellbrook Cir, Conyers, GA 30012\nTime: Eastern\n" in text
-    assert text.endswith('Phone: (770) 922-1654\nSite: not found\nReply "E1" to call.')
+    assert text.endswith('Phone: (770) 922-1654\n(from state license)\nSite: not found\nReply "E1" to call.')
+
+
+def test_the_phone_says_where_it_came_from():
+    """10/20, Joey: one or two words under the phone saying where it came from."""
+    facts = {"phone": "+17709221654"}
+    assert el.phone_source("+14045551212", "call me at 404-555-1212", "", facts) == "their reply"
+    assert el.phone_source("+17709221654", "yes", "", facts) == "state license"
+    assert el.phone_source("+16785550000", "yes", "+16785550000", facts) == "GoHighLevel"
+    assert el.phone_source("", "yes", "", facts) == ""
 
 
 def test_community_lines_units_census_and_gaps():

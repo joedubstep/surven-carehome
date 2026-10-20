@@ -156,6 +156,7 @@ def prepare(item: dict) -> dict:
     _ghl("POST", f"/contacts/{cid}/tags", {"tags": TAGS})
     # The phone to call: what they wrote, else what is already saved, else the state license list's facility phone.
     phone = phone_in_reply(item.get("said", "")) or contact.get("phone") or facts.get("phone", "")
+    phone_from = phone_source(phone, item.get("said", ""), contact.get("phone", ""), facts)
     if phone and phone != contact.get("phone"):
         put = _ghl("PUT", f"/contacts/{cid}", {"phone": phone})
         if not (put.get("contact") or put.get("succeded")):
@@ -180,7 +181,19 @@ def prepare(item: dict) -> dict:
     if not item.get("noted"):
         when = item.get("at", datetime.now().isoformat(timespec="minutes"))[:16].replace("T", " ")
         _ghl("POST", f"/contacts/{cid}/notes", {"body": f"Cold email reply {when} ({item.get('facility', '')}, code E{n}): {item.get('said', '')[:1500]}"})
-    return {"code": f"E{n}", "phone": phone, "website": website, "contact_id": cid}
+    return {"code": f"E{n}", "phone": phone, "phone_from": phone_from, "website": website, "contact_id": cid}
+
+
+def phone_source(phone: str, said: str, saved: str, facts: dict) -> str:
+    """Where the number came from, for the line under it in Joey's text (10/20, Joey: "where you got the phone
+    number from... (from blah blah blah)"). A state license number is the home's main line, not a personal cell."""
+    if not phone:
+        return ""
+    if phone == phone_in_reply(said):
+        return "their reply"
+    if phone == facts.get("phone"):
+        return "state license"
+    return "GoHighLevel" if phone == saved else ""
 
 
 def short_name(name: str, fallback: str) -> str:
@@ -241,8 +254,14 @@ def alert_text(item: dict, lead: dict | None) -> str:
     phone = pretty_phone((lead or {}).get("phone", "")) or "not found"
     site = re.sub(r"^https?://(www\.)?", "", (lead or {}).get("website", "")).rstrip("/") or "not found"
     lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\""]
-    lines += community_lines(_facts(item.get("id", "")))
-    lines += [f"Phone: {phone}", f"Site: {site}"]
+    facts = _facts(item.get("id", ""))
+    lines += community_lines(facts)
+    lines.append(f"Phone: {phone}")
+    ld = lead or {}
+    src = ld.get("phone_from") or phone_source(ld.get("phone", ""), item.get("said", ""), "", facts)
+    if src:
+        lines.append(f"(from {src})")
+    lines.append(f"Site: {site}")
     if not code:
         lines.append("Call code coming, GoHighLevel did not answer. Texting it when it does.")
     elif phone == "not found":
