@@ -25,7 +25,6 @@ import subprocess
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import secrets_store
 
@@ -212,7 +211,7 @@ def nice_address(a: str, state: str = "") -> str:
     return " ".join(word(w) for w in a.split())
 
 
-def community_lines(f: dict, now: datetime | None = None) -> list:
+def community_lines(f: dict) -> list:
     """10/20, Joey: "more information on their community... what kind of care they provide, how many beds there are,
     where they're located, and their time zone". Only what the state license list said; a missing fact is left out."""
     out = []
@@ -226,12 +225,8 @@ def community_lines(f: dict, now: datetime | None = None) -> list:
     where = nice_address(f.get("address", ""), f.get("state", "")) or ", ".join(x for x in (f.get("city"), f.get("state")) if x)
     if where:
         out.append(f"Where: {where}")
-    if f.get("tz"):
-        try:
-            local = (now or datetime.now(ZoneInfo("UTC"))).astimezone(ZoneInfo(f["tz"]))
-            out.append(f"Time: {TZ_NAMES.get(f['tz'], f['tz'])}, {local.strftime('%I:%M %p').lstrip('0')} there now")
-        except Exception:
-            out.append(f"Time: {TZ_NAMES.get(f['tz'], f['tz'])}")
+    if f.get("tz"):  # 10/20, Joey: "just say time: Eastern. I don't need the exact time."
+        out.append(f"Time: {TZ_NAMES.get(f['tz'], f['tz'])}")
     return out
 
 

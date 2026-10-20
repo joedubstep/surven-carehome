@@ -113,17 +113,16 @@ def test_the_text_says_care_beds_where_and_time_zone(world):
     reply("ga-ml-conyers-llc-alc000295", "dlittle3@mindspring.com", "Ml Conyers", "yes", first="")
     ch.send_alert_texts()
     text = world["sent"][0]
-    assert "\nCare: assisted living community, memory care\nBeds: 70\nWhere: 1352 Wellbrook Cir, Conyers, GA 30012\nTime: Eastern, " in text
+    assert "\nCare: assisted living community, memory care\nBeds: 70\nWhere: 1352 Wellbrook Cir, Conyers, GA 30012\nTime: Eastern\n" in text
     assert text.endswith('Phone: (770) 922-1654\nSite: not found\nReply "E1" to call.')
 
 
 def test_community_lines_units_census_and_gaps():
-    from datetime import datetime, timezone
     f = {"care": "certified assisted living residence", "beds": 50, "beds_word": "units", "open_beds": 4,
          "census_date": "08/20/2026", "address": "157 Herrick Road, Newton, MA", "state": "MA", "tz": "America/Chicago"}
-    lines = el.community_lines(f, now=datetime(2026, 10, 20, 15, 5, tzinfo=timezone.utc))
+    lines = el.community_lines(f)
     assert lines == ["Care: certified assisted living residence", "Units: 50 (4 open at the 08/20/2026 state visit)",
-                     "Where: 157 Herrick Road, Newton, MA", "Time: Central, 10:05 AM there now"]
+                     "Where: 157 Herrick Road, Newton, MA", "Time: Central"]
     assert el.community_lines({}) == []  # nothing known, nothing said
     assert el.nice_address("388 12TH STREET, OAKLAND, CA 94607", "CA") == "388 12th Street, Oakland, CA 94607"
     assert el.nice_address("8300 SW BARNES RD, PORTLAND, OR 97225", "OR") == "8300 SW Barnes Rd, Portland, OR 97225"
