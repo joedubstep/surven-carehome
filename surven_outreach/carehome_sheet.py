@@ -33,7 +33,7 @@ def status_by_email():
     for r in con.execute("SELECT * FROM prospects"):
         st, step = r["status"], r["current_step"] or 0
         label = {"queued": "Queued", "replied": "Replied", "bounced": "Bounced", "opted_out": "Opted out",
-                 "completed": "All 6 sent, no reply", "skipped": "Skipped (under 10 beds)"}.get(st, st.title())
+                 "completed": "All 6 sent, no reply", "skipped": "Skipped"}.get(st, st.title())
         if st == "active":
             label = f"Emailed {step} of 6"
         out[(r["email"] or "").strip().lower()] = [label, step, r["last_sent_on"] or ""]
@@ -158,7 +158,10 @@ def append_homes(recs):
     head = sheet_values(sid, tok, f"{TAB}!1:1")[0]
     ei = head.index("Email")
     have = {(r[0] if r else "").strip().lower() for r in sheet_values(sid, tok, f"{TAB}!{col_letter(ei)}:{col_letter(ei)}")}
-    have |= {(r[0] if r else "").strip().lower() for r in sheet_values(sid, tok, f"'{SMALL_TAB}'!{col_letter(ei)}:{col_letter(ei)}")}
+    try:  # 10/23: Joey had the under-40 homes and this tab deleted (backup in data/carehome/archive_2026-10-23_under40)
+        have |= {(r[0] if r else "").strip().lower() for r in sheet_values(sid, tok, f"'{SMALL_TAB}'!{col_letter(ei)}:{col_letter(ei)}")}
+    except RuntimeError:
+        pass
     out = []
     for r in recs:
         if r["email"].strip().lower() in have:
