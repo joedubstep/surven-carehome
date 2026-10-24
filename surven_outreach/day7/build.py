@@ -76,11 +76,43 @@ def first_name(r) -> str:
 
 def home_name(p: dict) -> str:
     """The name the earlier emails used ("Morningstar Of Pasadena"), or "your home" when the license name looked
-    like a company (those emails said "your home" too)."""
-    if p.get("home"):
-        return p["home"]
-    m = re.search(r"open at (.+?) right now\?", p.get("emails", {}).get("1", {}).get("body", ""))
-    return m.group(1) if m else "your home"
+    like a company (those emails said "your home" too). License lists put "The" last ("Plaza, The", "Bridgewater At
+    Waterman Village (the)"); here it goes back in front."""
+    n = p.get("home")
+    if not n:
+        m = re.search(r"open(?: rooms)? at (.+?) right now\?", p.get("emails", {}).get("1", {}).get("body", ""))
+        n = m.group(1) if m else "your home"
+    m = re.match(r"^(.+?),?\s*\(?the\)?$", n, re.I) if re.search(r"(,\s*the|\(the\))$", n, re.I) else None
+    if m:
+        n = "The " + m.group(1).strip()
+    return n.replace(" @ ", " At ")
+
+
+GENERIC = re.compile(r"\s+(?:assisted living(?: facility| residence| community| center)?|(?:and|&) memory care(?: community)?|"
+                     r"retirement communit(?:y|ies)|senior living(?: community)?|(?:and|&)? ?retirement cottages|"
+                     r"(?:and|&)? ?special care (?:center|house))(?=\s|$)", re.I)
+
+
+def ad_name(home: str) -> str:
+    """The name on the ad's top band and corner. A long name loses its generic words so it stays readable
+    ("Oakbridge Terrace Assisted Living Residence At Buckingham's Choice" -> "Oakbridge Terrace At Buckingham's
+    Choice"). The email keeps the full name."""
+    if len(home) <= 30:
+        return home
+    short = re.sub(r"\s{2,}", " ", GENERIC.sub("", home)).strip(" ,&-")
+    return short if len(short.split()) >= 2 else home
+
+
+STREET = re.compile(r"^.*\b(?:road|rd|drive|dr|street|avenue|ave|blvd|boulevard|lane|ln|highway|hwy|pike|way|circle|"
+                    r"place|parkway|pkwy)\b\.?\s+(?=\S)", re.I)
+
+
+def clean_city(city: str) -> str:
+    """Fix what the state lists hand us: a street glued to the city when the address had no comma ("Foulk Road
+    Wilmington"), a cut-off name ("Washington Court Hou") and "Mcminnville"."""
+    c = STREET.sub("", (city or "").replace("200e", "").strip())
+    c = re.sub(r"\bCourt Hou$", "Court House", c)
+    return re.sub(r"\bMc([a-z])", lambda m: "Mc" + m.group(1).upper(), c)
 
 
 def _care(f: dict) -> str:
@@ -153,7 +185,7 @@ def prep(r, p: dict, today: date | None = None) -> dict:
            "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
            "page": res.get("page_name", ""), "match": res.get("match", "")}
     if not (rec["ads"] == "yes" and rec["start"]):
-        rec.update(photo.pick(f.get("website", ""), r["email"]))
+        rec.update(photo.pick(f.get("website", ""), r["email"], browser=(S.ctx, S.req)))
     s = load()
     s[r["id"]] = rec
     save(s)
@@ -171,8 +203,10 @@ def render_ad(r, p: dict, rec: dict) -> bytes:
     from .free_ad.render import render_one
     f = _facts(r["id"])
     home = home_name(p)
-    city, st = f.get("city", ""), f.get("state", "")
-    shown = home if home != "your home" else (rec.get("page") or _clean_license(f.get("facility", "")) or city)
+    city, st = clean_city(f.get("city", "")), f.get("state", "")
+    # "your home" rows: the email does not name the home, so the ad shows its Facebook Page name or no name at all
+    # (10/24 volume test: license names like "LIVE HEAL CONNECT RESIDENCES AT SPARTANBURG LLC (LHC ...)").
+    shown = ad_name(home) if home != "your home" else ad_name(rec.get("page") or "")
     a = {"name": shown, "city": city, "state": st, "care": "assisted living",
          "band": shown.upper() if home != "your home" else f"ASSISTED LIVING · {city.upper()}, {st}".strip(" ,·"),
          "headline": f"Senior Living in {city}, Designed for Living Well" if city else "Senior Living Designed for Living Well",

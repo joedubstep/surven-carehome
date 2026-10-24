@@ -99,3 +99,30 @@ def test_sheet_reply_stages():
     assert st("We are full", 2, "v3") == "Not a fit"
     assert st("4 rooms", 1, "v3") == "Warm reply"
     assert st("Yes. Call Lynn at +1 (907) 575-7014", 5, "") == "Warm reply"  # phone digits are not a room count
+
+
+def test_day7_names_and_cities_are_cleaned():
+    from surven_outreach.day7.build import ad_name, clean_city, home_name
+    assert home_name({"home": "Plaza, The"}) == "The Plaza"
+    assert home_name({"home": "Bridgewater At Waterman Village (the)"}) == "The Bridgewater At Waterman Village"
+    assert home_name({"home": "Theodore House"}) == "Theodore House"
+    assert ad_name("Oakbridge Terrace Assisted Living Residence At Buckingham's Choice") == \
+        "Oakbridge Terrace At Buckingham's Choice"
+    assert ad_name("Sunstar Village") == "Sunstar Village"
+    assert clean_city("Foulk Road Wilmington") == "Wilmington"
+    assert clean_city("Washington Court Hou") == "Washington Court House"
+    assert clean_city("Mcminnville") == "McMinnville"
+    assert clean_city("St. Paul") == "St. Paul"
+
+
+def test_photo_rank_puts_house_and_residents_before_stock_aerials():
+    from surven_outreach.day7.photo import rank
+    pics = [{"u": "/m-adobestock-1816725053.jpg", "a": 1e12, "alt": ""},
+            {"u": "/promise-live-800.avif", "a": 58320, "alt": "A resident laughing with her daughter"},
+            {"u": "/logo.png", "a": 9e5, "alt": ""},
+            {"u": "https://static.wixstatic.com/media/fa89d0_d9~mv2.jpg/v1/fill/w_460,h_460/a.jpg", "a": 211600,
+             "alt": "Exterior view of the home"}]
+    got = rank(pics, "https://home.com/")
+    assert got[-1] == "https://home.com/m-adobestock-1816725053.jpg"
+    assert "https://static.wixstatic.com/media/fa89d0_d9~mv2.jpg" in got[:2]
+    assert not any("logo" in u for u in got)

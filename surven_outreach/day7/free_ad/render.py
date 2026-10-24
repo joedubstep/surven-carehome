@@ -216,7 +216,7 @@ def build_words(a: dict) -> dict:
     place = f"{city}, {state}" if city and state else city
     band = a.get("band") or (f"{care} · {place}" if place else care)
     return {"band": band.upper(), "headline": a.get("headline") or "You can start with a visit",
-            "line": line, "cta": a.get("cta") or "Book a tour", "name": a["name"].strip()}
+            "line": line, "cta": a.get("cta") or "Book a tour", "name": (a.get("name") or "").strip()}
 
 
 # ---------- render ----------
@@ -234,7 +234,7 @@ def render_one(ctx, req, a: dict, out: Path) -> dict:
         info = page.evaluate("d => window.fill(d)", data)
         out.parent.mkdir(parents=True, exist_ok=True)
         page.locator("#ad").screenshot(path=str(out))
-        res = {"home": a["name"], "out": str(out), "color": brand, "color_from": source, **info}
+        res = {"home": a.get("name") or "", "out": str(out), "color": brand, "color_from": source, **info}
         if info["upscale"] > 1.6:
             res["warning"] = f"photo is small ({info['photoW']}x{info['photoH']}); it is stretched {info['upscale']}x and may look soft"
         return res

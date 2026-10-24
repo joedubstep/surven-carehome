@@ -841,15 +841,19 @@ def day7_due(con, queue: dict, today: date, within: int = 1) -> list:
     return out
 
 
-def cmd_day7_prep(con, limit: int = 400) -> None:
+def cmd_day7_prep(con, limit: int = 400, minutes: int = 45) -> None:
     """Nightly (Joey 10/24): the Ad Library check and photo pick for every home whose day 7 is due by tomorrow, so the
     morning sends only make the pictures. Anything missed here is done on the spot at send time."""
     from .day7 import build as day7
     items = day7_due(con, load_queue(), date.today())[:limit]
     log(f"day7-prep: {len(items)} home(s) to check")
     n = {"yes": 0, "no": 0, "unsure": 0, "error": 0}
+    stop_at = time.time() + minutes * 60  # the cloud job ends at 60 minutes; what is left is done at send time
     try:
         for r, p in items:
+            if time.time() > stop_at:
+                log(f"day7-prep: {minutes} minutes used, the rest are checked at send time")
+                break
             try:
                 rec = day7.prep(r, p)
                 n[rec["ads"] if rec["ads"] in n else "error"] += 1

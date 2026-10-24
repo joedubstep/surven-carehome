@@ -122,6 +122,7 @@ window.fill = async function (d) {
   const parts = d.name.match(/^(.+?)\s+((?:at|of|in|on|by)\s+.+)$/i);
   const b1 = document.createElement('b'); b1.textContent = parts ? parts[1] : d.name; nm.appendChild(b1);
   if (parts) { const s2 = document.createElement('span'); s2.className = 'sub'; s2.textContent = parts[2]; nm.appendChild(s2); }
+  if (!d.name) $('mark').style.display = 'none';  // no trusted name for this home: no wordmark
   if (d.ctaStyle === 'text') $('ad').classList.add('cta-text');
   if (d.shade === 'corner') $('ad').classList.add('corner');
   if (d.logo) { $('logo').src = d.logo; $('mark').classList.add('has-logo'); }
