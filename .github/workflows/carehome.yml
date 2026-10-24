@@ -49,8 +49,10 @@ jobs:
       - name: Cache the browser
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.64.1
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/surven-clip
+          key: playwright-clip-${{ runner.os }}-1.64.1
       - run: python -m playwright install --with-deps chromium
       - name: Write .env
         run: printf '%s\n' "$DOTENV" > .env

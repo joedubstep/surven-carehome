@@ -123,7 +123,7 @@ def test_photo_rank_puts_house_and_residents_before_stock_aerials():
             {"u": "https://static.wixstatic.com/media/fa89d0_d9~mv2.jpg/v1/fill/w_460,h_460/a.jpg", "a": 211600,
              "alt": "Exterior view of the home"}]
     got = rank(pics, "https://home.com/")
-    assert got[-1] == "https://home.com/m-adobestock-1816725053.jpg"
+    assert not any("adobestock" in u for u in got)  # a stock-library picture is not the home
     assert "https://static.wixstatic.com/media/fa89d0_d9~mv2.jpg" in got[:2]
     assert not any("logo" in u for u in got)
 
@@ -161,3 +161,17 @@ def test_outside_score_tells_a_building_from_a_room():
     b1, b2 = io.BytesIO(), io.BytesIO()
     out.save(b1, "JPEG"); room.save(b2, "JPEG")
     assert outside(b1.getvalue()) > 0.5 and outside(b2.getvalue()) < 0.05
+
+
+def test_image_model_tells_what_a_photo_shows():
+    import io
+    from PIL import Image
+    from surven_outreach.day7 import looks
+    out = Image.new("RGB", (640, 480), (90, 150, 230))
+    out.paste((70, 140, 60), (0, 300, 640, 480))
+    buf = io.BytesIO(); out.save(buf, "JPEG")
+    seen = looks.look(buf.getvalue())
+    if seen is None:  # no model download possible here
+        return
+    assert set(seen) >= {"building", "people", "inside", "sign", "bad", "top"}
+    assert abs(sum(v for k, v in seen.items() if k != "top") - 1) < 0.01

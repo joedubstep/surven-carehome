@@ -1,11 +1,10 @@
 """Pick one real photo of a care home for its free ad (Joey 10/24: "no AI images actually please", "match the
 location", under 1% on the stock photo).
 
-Where it looks, in order, keeping the first outside shot of the building it finds:
-  1. the home's Google Maps listing, checked to be the same address (maps.py): owners' and visitors' photos
-  2. its Facebook Page cover (the Page the Ad Library matched, or the one its website links to)
-  3. its own website (biggest pictures, house and residents first, stock and aerials last)
-With no outside shot anywhere, a real inside photo from Maps or Facebook comes next, then the website's best.
+Where it looks: the home's Google Maps listing, checked to be the same address (maps.py), with its photo gallery
+and Street View; its website (and the one its Maps listing links); its Facebook Page. A free image model (looks.py)
+says what each photo shows. The outside of the building wins, then residents, the sign, a room; a real photo of
+the place (Maps, Street View) beats the website at the same level. Flowers, headshots, posters and the like are out.
 Every picture must be big, a photo (not a logo, flyer or graphic) and carry no AI tag (C2PA / IPTC "made by AI",
 ChatGPT, Midjourney, Firefly...). Nothing at all -> the stock smiling-resident photo shipped next to this file."""
 from __future__ import annotations
@@ -143,7 +142,15 @@ def outside(data: bytes) -> float:
     return round(sky + 0.6 * green, 3)
 
 
+TIER = {"building": 3, "people": 2, "sign": 1.5, "inside": 1}
+TRUST = {"google maps": 2, "street view": 2, "facebook": 1, "website": 0}  # real photos of the place first
+STOCK_LIB = re.compile(r"isteam/stock|unsplash|pexels\.com|shutterstock|istockphoto|gettyimages|adobestock|"
+                       r"stock\.adobe|depositphotos|dreamstime|nsplsh", re.I)
+
+
 def _try(req, url: str, src: str, final_url: str = "", small: bool = False) -> dict | None:
+    """Download, check it is a real photo, and say what it shows (looks.py): -> candidate or None."""
+    from . import looks
     try:
         r = req.get(url, timeout=15000)
         data = r.body() if r.ok else b""
@@ -152,21 +159,32 @@ def _try(req, url: str, src: str, final_url: str = "", small: bool = False) -> d
     wh = good_photo(data, small)
     if not wh:
         return None
-    return {"photo": final_url or url, "from": src, "w": wh[0], "h": wh[1], "outside": outside(data)}
+    seen = looks.look(data)
+    if seen is None:  # no image model on this machine: the color rule
+        o = outside(data)
+        seen = {"building": 1.0 if o >= OUTSIDE else 0.0, "inside": 0.0 if o >= OUTSIDE else 1.0, "people": 0.0,
+                "sign": 0.0, "bad": 0.0, "top": "color rule"}
+    if seen["bad"] >= 0.5:  # flowers, a headshot, a costume party, a wreath, a poster, a map...
+        return None
+    group = max(TIER, key=lambda g: seen[g])
+    return {"photo": final_url or url, "from": src, "w": wh[0], "h": wh[1], "shows": group,
+            "sure": seen[group], "seen": seen["top"], "score": (TIER[group], TRUST.get(src, 0), seen[group])}
 
 
 def best_of(req, urls: list[str], src: str, n: int = 14, size=None, small: bool = False) -> dict | None:
-    """The first outside shot among the first n pictures, else the first good photo. size(u) -> (test, final) URLs."""
-    first = None
+    """The best of the first n pictures: an outside shot of the building first, then residents, the sign, a room.
+    Stops early at a clear building shot. size(u) -> (test, final) URLs."""
+    best = None
     for u in urls[:n]:
         test, final = size(u) if size else (u, u)
         got = _try(req, test, src, final, small)
         if not got:
             continue
-        if got["outside"] >= OUTSIDE:
-            return got
-        first = first or got
-    return first
+        if best is None or got["score"] > best["score"]:
+            best = got
+        if got["shows"] == "building" and got["sure"] >= 0.8:
+            break
+    return best
 
 
 def pick_maps(ctx, req, place: tuple) -> tuple[dict | None, dict]:
@@ -181,7 +199,7 @@ def pick_maps(ctx, req, place: tuple) -> tuple[dict | None, dict]:
         page.close()
     if not m["match"]:
         return None, {}
-    got = best_of(req, m["photos"], "google maps", size=lambda u: (maps.sized(u), maps.sized(u)), small=True)
+    got = best_of(req, m["photos"], "google maps", n=16, size=lambda u: (maps.sized(u), maps.sized(u)), small=True)
     if got:
         got["listing"] = m["title"]
     return got, m
@@ -240,16 +258,11 @@ _FB_LINK = r"""() => [...document.querySelectorAll('a[href*="facebook.com/"]')].
   .filter(h => !/sharer|share\.php|plugins|dialog|\/groups\/|\/events\//.test(h))"""
 
 
-# What a picture shows, from its file name and alt text. Joey 10/24: the ad needs the house or smiling residents
-# ("there's no house in that ad"); a stock aerial of the town ranks last.
+# What a picture shows, from its file name and alt text: the order pictures are tried in on a website.
 GOOD = re.compile(r"resident|senior|elder|grand|smil|happy|laugh|exterior|building|entrance|front|outside|outdoor|"
                   r"courtyard|garden|porch|patio|house|campus|caregiver|staff|nurse|activit|dining|family|friends|"
                   r"couple|community", re.I)
-STOCKY = re.compile(r"adobestock|shutterstock|istock|getty|unsplash|nsplsh|pexels|depositphotos|dreamstime|"
-                    r"stock-photo|-utc\.|image by ", re.I)
 FAR = re.compile(r"aerial|drone|skyline|sunset|landscape|downtown|cityscape|abstract", re.I)
-BUILDING = re.compile(r"exterior|building|entrance|front|outside|outdoor|courtyard|campus|facade|porch|patio|"
-                      r"grounds|garden|house|community", re.I)
 
 
 def _full_size(u: str) -> str:
@@ -260,16 +273,18 @@ def _full_size(u: str) -> str:
 
 
 def rank(pics: list[dict], base: str) -> list[str]:
-    """Picture URLs, best first: what it shows (house, residents), then how big it is drawn."""
+    """Website picture URLs to try, best first: what it shows (house, residents), then how big it is drawn.
+    Stock-library pictures (Unsplash, GoDaddy's stock, Shutterstock...) are not the home, so they are left out."""
     seen, out = set(), []
     for x in pics:
         u = _full_size(urljoin(base, unescape(x["u"].strip())))
         name, alt = _file(u), x.get("alt") or ""
-        if not u.startswith("http") or u in seen or SKIP.search(name) or SKIP.search(alt) or AI_NAME.search(name):
+        if (not u.startswith("http") or u in seen or SKIP.search(name) or SKIP.search(alt) or AI_NAME.search(name)
+                or STOCK_LIB.search(u) or STOCK_LIB.search(alt)):
             continue
         seen.add(u)
         words = f"{name} {alt}"
-        score = (2 if GOOD.search(words) else 0) - (2 if STOCKY.search(words) else 0) - (2 if FAR.search(words) else 0)
+        score = (2 if GOOD.search(words) else 0) - (2 if FAR.search(words) else 0)
         out.append((score, x["a"] if x["a"] < 1e11 else 5e5, u))  # og:image counts as one mid-size picture
     return [u for _, _, u in sorted(out, key=lambda t: (-t[0], -t[1]))]
 
@@ -295,45 +310,82 @@ def pick_browser(ctx, req, site: str, max_tries: int = 14) -> dict | None:
     return {**got, "site": final, "fb": fb}
 
 
+NOT_THE_HOME = re.compile(r"zillow|realtor\.com|redfin|trulia|homes\.com|apartments\.com|loopnet|ytimg|youtube|"
+                          r"pinterest|amazon|ebay|etsy|poshmark|walmart", re.I)
+DIRECTORY = re.compile(r"caring\.com|seniorly|aplaceformom|senioradvisor|seniorhousingnet|seniorliving\.org|"
+                       r"assistedliving|retirementliving|carelistings", re.I)
+
+
+def pick_search(ctx, req, name: str, address: str, city: str) -> dict | None:
+    """Last real source (10/24, for homes with no Maps photo and no usable website picture): an image search for
+    the name and town. Only pages that carry the home's name count, its own site and senior living directories
+    first; real estate listings (other houses) are left out."""
+    from urllib.parse import quote
+    st = re.search(r",\s*([A-Z]{2})\b", address or "")
+    q = " ".join(x for x in (name, city, st.group(1) if st else "") if x)
+    page = ctx.new_page()
+    try:
+        page.goto("https://www.bing.com/images/search?q=" + quote(q), wait_until="domcontentloaded", timeout=40000)
+        page.wait_for_timeout(3000)
+        raw = page.evaluate("() => [...document.querySelectorAll('a.iusc')].map(a => a.getAttribute('m')).slice(0, 30)")
+    except Exception:
+        return None
+    finally:
+        page.close()
+    import json as _json
+    words, hits = _words(name), []
+    for m in raw:
+        try:
+            d = _json.loads(m or "{}")
+        except ValueError:
+            continue
+        u, page_url, title = d.get("murl", ""), d.get("purl", ""), d.get("t", "")
+        if not u or NOT_THE_HOME.search(u) or NOT_THE_HOME.search(page_url) or STOCK_LIB.search(u):
+            continue
+        dom = domain_of(page_url)
+        own = any(w in dom for w in words)
+        if not (own or words & _words(title)):
+            continue
+        hits.append((0 if own else 1 if DIRECTORY.search(dom) else 2, u))
+    return best_of(req, [u for _, u in sorted(hits, key=lambda t: t[0])], "web search", n=10)
+
+
 def pick(website: str, email: str, max_tries: int = 12, browser=None, place: tuple | None = None, fb: str = "",
          home: str = "") -> dict:
-    """-> {"photo": url or "", "site": url, "from": "google maps" | "facebook" | "website" | "stock", "w", "h"}
+    """-> {"photo": url or "", "site": url, "from": "google maps" | "street view" | "facebook" | "website" | "stock",
+    "shows": "building" | "people" | "sign" | "inside", "w", "h"}
     browser: (playwright context, request context). place: (name, address, city) for Google Maps. fb: Page id or
-    link from the Ad Library."""
+    link from the Ad Library. The best photo across all of them wins: what it shows first (the building, then
+    residents, the sign, a room), then where it came from (the Maps listing and Street View are the place itself)."""
     site = site_for(website, email)
     if not browser:
         return _pick_quick(site, max_tries)
     ctx, req = browser
-    later, listing = [], {}
+    found, listing = [], {}
     if place:
         m, listing = pick_maps(ctx, req, place)
-        if m and m["outside"] >= OUTSIDE:
+        if m and m["shows"] == "building" and m["sure"] >= 0.6:  # the usual case: a clear outside shot on Maps
             return {**m, "site": site}
-        later.append(m)
+        found.append(m)
+        if listing.get("street_view"):  # the building itself, from the street
+            found.append(_try(req, listing["street_view"], "street view", small=True))
     web = pick_browser(ctx, req, site) if site else None
     other = listing.get("website") or ""
     if (not web or not web.get("photo")) and other and domain_of(other) != domain_of(site):
         web = pick_browser(ctx, req, other) or web  # 10/24: the Maps listing often links a newer site than ours
+    found.append(web if web and web.get("photo") else None)
     link = fb or (web or {}).get("fb", "")
     if link:
-        f = pick_facebook(ctx, req, link, home)
-        if f and f["outside"] >= OUTSIDE:
-            return {**f, "site": site}
-        later.append(f)
-    if listing.get("street_view"):  # the building itself, from the street
-        sv = _try(req, listing["street_view"], "street view", small=True)
-        if sv:
-            return {**sv, "site": site}
-    if later and later[0] and later[0].get("photo"):  # a real inside photo of the place, from its Maps listing
-        return {**later[0], "site": site}
-    # 10/24 volume test: website pictures of people outdoors are often stock (couples, a staff headshot); only a
-    # picture named as the building counts as an outside shot of the home.
-    if web and web.get("photo") and web["outside"] >= OUTSIDE and BUILDING.search(_file(web["photo"])):
-        return {**web, "site": web["site"]}
-    for got in later[1:] + [web]:
-        if got and got.get("photo"):
-            return {**got, "site": (web or {}).get("site") or site}
-    return {"photo": "", "site": (web or {}).get("site") or site, "from": "stock"}
+        found.append(pick_facebook(ctx, req, link, home))
+    found = [f for f in found if f and f.get("photo")]
+    if place and not any(f["shows"] in ("building", "people") for f in found):
+        found.append(pick_search(ctx, req, *place))
+        found = [f for f in found if f and f.get("photo")]
+    site_out = (web or {}).get("site") or site
+    if not found:
+        return {"photo": "", "site": site_out, "from": "stock"}
+    best = max(found, key=lambda f: f["score"])
+    return {**{k: v for k, v in best.items() if k not in ("score", "site", "fb")}, "site": site_out}
 
 
 def _pick_quick(site: str, max_tries: int) -> dict:
