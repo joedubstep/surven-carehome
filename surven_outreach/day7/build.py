@@ -255,7 +255,7 @@ def _html(before: str, cid: str, alt: str, width: int, after: str) -> str:
     foot = (f'<p style="margin:22px 0 0;font-size:12px;line-height:1.5;color:#8a8a8a">Joey Gargiulo, Surven Occupancy '
             f'&middot; <a href="{SITE}" style="color:#8a8a8a">surven.ai</a><br>Reply STOP to opt out.</p>')
     img = (f'<p style="margin:0 0 14px"><img src="cid:{cid}" alt="{H.escape(alt)}" width="{width}" '
-           f'style="display:block;width:100%;max-width:{width}px;height:auto;border:0;border-radius:6px"></p>')
+           f'style="display:block;width:100%;max-width:{width}px;height:auto;border:0"></p>')
     return ('<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">'
             + _paras(before) + img + _paras(after) + foot + "</div>")
 
