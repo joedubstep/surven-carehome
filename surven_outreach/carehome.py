@@ -43,6 +43,16 @@ TEST_IGNORE_TIMING = os.getenv("CAREHOME_IGNORE_TIMING") == "1"  # test harness 
 # step -> days after email 1. v2 (2026-09-23): 6 emails, Gong's 6-7 sweet spot, breakup on day 21.
 OFFSETS = {1: 0, 2: 3, 3: 7, 4: 10, 5: 14, 6: 21}
 LAST_STEP = 6
+# v3 (Joey 10/23, locked): 4 emails on days 1, 3, 7 and 14. Homes already mid-sequence keep the old 6.
+SEQ_V3 = {1: 0, 2: 2, 3: 6, 4: 13}
+
+
+def offsets(p: dict) -> dict:
+    return SEQ_V3 if p.get("seq") == "v3" else OFFSETS
+
+
+def last_step(p: dict) -> int:
+    return max(offsets(p))
 # Owners answer early morning (Nevrus principle 14). Send only between 7:00 and 9:59 local.
 WINDOW = (7, 10)
 MAX_NEW_PER_DAY = 20   # Joey 9/22: volume up; 20 new/day keeps the primary domain safe
@@ -645,15 +655,17 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
         if not TEST_IGNORE_TIMING and not (WINDOW[0] <= local.hour < WINDOW[1]):
             continue
         step = r["current_step"] + 1
-        if step > LAST_STEP:
+        if step > last_step(p):
             continue
+        if (p.get("emails", {}).get(str(step)) or {}).get("pending"):
+            continue  # v3 day 7: waits until its per-home email (ad image or tool picture) is built
         if step == 1:
             if r["status"] != "queued":
                 continue
             fresh.append((r, p, step))
         else:
             first = date.fromisoformat(r["first_sent_on"])
-            if not TEST_IGNORE_TIMING and local.date() < first + timedelta(days=OFFSETS[step]):
+            if not TEST_IGNORE_TIMING and local.date() < first + timedelta(days=offsets(p)[step]):
                 continue
             if not TEST_IGNORE_TIMING and r["last_sent_on"] == local.date().isoformat():
                 continue
@@ -724,7 +736,7 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
         """UPDATE prospects SET current_step=?, status=?, last_sent_on=?,
            first_sent_on=COALESCE(first_sent_on,?), thread_message_id=COALESCE(thread_message_id,?),
            thread_subject=COALESCE(thread_subject,?), sender=COALESCE(sender,?) WHERE id=?""",
-        (step, "completed" if step == LAST_STEP else "active", local_day, local_day, mid, subject, from_addr, r["id"]),
+        (step, "completed" if step == last_step(p) else "active", local_day, local_day, mid, subject, from_addr, r["id"]),
     )
     con.commit()
     log(f"SENT {r['id']} step {step} from {from_addr} to {r['email']}")
