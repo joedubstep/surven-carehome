@@ -869,6 +869,30 @@ def cmd_day7_prep(con, limit: int = 400, minutes: int = 45) -> None:
     log(f"day7-prep done: running ads {n['yes']}, none {n['no']}, unsure {n['unsure']}, errors {n['error']}")
 
 
+def cmd_day7_photo_check(con, n: int = 10) -> None:
+    """Cloud check (10/24): the free ad's photo pick for n random queued homes, counts only (the repo is public).
+    Nothing is saved or sent."""
+    import random
+    from collections import Counter
+    from .day7 import build as day7
+    queue = load_queue()
+    ids = [k for k, p in queue.items() if p.get("seq") == "v3"]
+    random.shuffle(ids)
+    got, secs = Counter(), []
+    try:
+        for pid in ids[:n]:
+            r = {"id": pid, "email": queue[pid]["email"], "first_name": queue[pid].get("first_name", "")}
+            t = time.time()
+            try:
+                got[day7.pick_photo(r, queue[pid], {}).get("from", "stock")] += 1
+            except Exception as ex:
+                got["error " + ex.__class__.__name__] += 1
+            secs.append(time.time() - t)
+    finally:
+        day7.close()
+    log(f"day7 photo check: {dict(got)}, {sum(secs) / max(1, len(secs)):.0f} s a home")
+
+
 def cmd_status(con) -> None:
     for r in con.execute("SELECT * FROM prospects ORDER BY rank DESC, id"):
         print(f"{r['id']:<32} {r['status']:<10} step {r['current_step']}  first {r['first_sent_on'] or '-'}  "
@@ -881,7 +905,7 @@ def main(argv=None) -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="carehome")
     ap.add_argument("cmd", choices=["load", "run", "status", "backfill-sent", "alerts", "alert-texts", "rescan",
-                                    "rescue-spam", "day7-prep"])
+                                    "rescue-spam", "day7-prep", "day7-photo-check"])
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--ack", action="store_true")
     a = ap.parse_args(argv)
@@ -904,6 +928,8 @@ def main(argv=None) -> None:
         cmd_run(con, a.dry)
     elif a.cmd == "day7-prep":
         cmd_day7_prep(con)
+    elif a.cmd == "day7-photo-check":
+        cmd_day7_photo_check(con)
     elif a.cmd == "rescan":
         scan_replies_full(con, load_config())
     else:

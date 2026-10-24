@@ -126,3 +126,38 @@ def test_photo_rank_puts_house_and_residents_before_stock_aerials():
     assert got[-1] == "https://home.com/m-adobestock-1816725053.jpg"
     assert "https://static.wixstatic.com/media/fa89d0_d9~mv2.jpg" in got[:2]
     assert not any("logo" in u for u in got)
+
+
+def test_ai_pictures_are_rejected_and_real_ones_kept():
+    import io
+    from PIL import Image
+    from surven_outreach.day7.photo import ai_made, good_photo
+    im = Image.effect_noise((1000, 700), 80).convert("RGB")
+    buf = io.BytesIO(); im.save(buf, "JPEG"); real = buf.getvalue()
+    tagged = real[:2] + b"c2pa jumbf digitalSourceType trainedAlgorithmicMedia generator ChatGPT" + real[2:]
+    assert not ai_made(real) and ai_made(tagged)
+    assert good_photo(tagged) is None
+
+
+def test_maps_listing_must_be_the_same_address():
+    from surven_outreach.day7.maps import same_place, sized
+    assert same_place("205 GILES AVE, OMAHA, TX 75571", "205 Giles Ave, Omaha, TX 75571")
+    assert same_place("865 E IRON AVE, DOVER, OH", "865 E Iron Ave, Dover, OH 44622", "Dover")
+    assert not same_place("205 GILES AVE, OMAHA, TX 75571", "210 Giles Ave, Omaha, TX 75571", "", "Indigo", "Bob's Auto")
+    assert same_place("3160 Gracefield Road, Silver Spring, MD 20904", "3140 Gracefield Rd, Silver Spring, MD 20904",
+                      "", "Riderwood Village", "Riderwood Village")  # one campus, two numbers
+    assert not same_place("205 GILES AVE, OMAHA, TX 75571", "205 Main St, Dallas, TX 75201")
+    assert sized("https://lh3.googleusercontent.com/grass-cs/AB12=w408-h306-k-no") == \
+        "https://lh3.googleusercontent.com/grass-cs/AB12=w1600-h1200-k-no"
+
+
+def test_outside_score_tells_a_building_from_a_room():
+    import io
+    from PIL import Image
+    from surven_outreach.day7.photo import outside
+    out = Image.new("RGB", (960, 960), (90, 150, 230))  # sky
+    out.paste((70, 140, 60), (0, 500, 960, 960))  # lawn
+    room = Image.new("RGB", (960, 960), (225, 215, 200))
+    b1, b2 = io.BytesIO(), io.BytesIO()
+    out.save(b1, "JPEG"); room.save(b2, "JPEG")
+    assert outside(b1.getvalue()) > 0.5 and outside(b2.getvalue()) < 0.05

@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "run | dry | stats | status | seed | day7"
+        description: "run | dry | stats | status | seed | day7 | photo-check"
         default: run
       to:
         description: "seed only: test inboxes, space separated"
@@ -88,6 +88,9 @@ jobs:
       - name: Day 7 prep (Ad Library check + photo pick for homes due by tomorrow)
         if: steps.pick.outputs.task == 'day7'
         run: python -m surven_outreach.carehome day7-prep 2>&1 | tee -a data/carehome/task.log
+      - name: Day 7 photo check (10 homes, counts only, saves nothing)
+        if: steps.pick.outputs.task == 'photo-check'
+        run: python -m surven_outreach.carehome day7-photo-check
       - name: Nightly stats
         if: steps.pick.outputs.task == 'stats'
         run: python -m surven_outreach.carehome_stats 2>&1 | tee -a data/carehome/stats_task.log
@@ -98,5 +101,5 @@ jobs:
         if: steps.pick.outputs.task == 'status'
         run: python -m surven_outreach.carehome status | tail -n 40
       - name: Save state
-        if: always() && steps.pick.outputs.task != 'dry' && steps.pick.outputs.task != 'seed'
+        if: always() && steps.pick.outputs.task != 'dry' && steps.pick.outputs.task != 'seed' && steps.pick.outputs.task != 'photo-check'
         run: python tools/cloud_state.py save-cloud

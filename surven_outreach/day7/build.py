@@ -82,9 +82,12 @@ def home_name(p: dict) -> str:
     if not n:
         m = re.search(r"open(?: rooms)? at (.+?) right now\?", p.get("emails", {}).get("1", {}).get("body", ""))
         n = m.group(1) if m else "your home"
-    m = re.match(r"^(.+?),?\s*\(?the\)?$", n, re.I) if re.search(r"(,\s*the|\(the\))$", n, re.I) else None
+    m = re.match(r"^(.+?),?\s*\(?the\)?$", n, re.I) if re.search(r"(,\s*the|\(the\)|\s+the)$", n, re.I) else None
     if m:
         n = "The " + m.group(1).strip()
+    m = re.match(r"^The - .+ (\S+)$", n)  # "The - A Senior Living Community Canopy" = "The Canopy"
+    if m:
+        n = "The " + m.group(1)
     return n.replace(" @ ", " At ")
 
 
@@ -183,13 +186,25 @@ def prep(r, p: dict, today: date | None = None) -> dict:
     res = check_home(al, search, city, st)
     rec = {"checked": (today or date.today()).isoformat(), "ads": res.get("running_ads", ""),
            "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
-           "page": res.get("page_name", ""), "match": res.get("match", "")}
+           "page": res.get("page_name", ""), "page_id": res.get("page_id", ""), "match": res.get("match", "")}
     if not (rec["ads"] == "yes" and rec["start"]):
-        rec.update(photo.pick(f.get("website", ""), r["email"], browser=(S.ctx, S.req)))
+        rec.update(pick_photo(r, p, rec))
     s = load()
     s[r["id"]] = rec
     save(s)
     return rec
+
+
+def pick_photo(r, p: dict, rec: dict) -> dict:
+    """A real photo of this home: its Google Maps listing (same address), its Facebook Page, its website (photo.py)."""
+    f = _facts(r["id"])
+    home = home_name(p)
+    name = home if home != "your home" else _clean_license(f.get("facility") or p.get("facility", ""))
+    S.start()
+    got = photo.pick(f.get("website", ""), r["email"], browser=(S.ctx, S.req),
+                     place=(name, f.get("address", ""), f.get("city", "")), fb=rec.get("page_id", ""), home=name)
+    got.pop("fb", None)
+    return got
 
 
 def _jpeg(png_path: Path, quality: int = 82) -> bytes:
