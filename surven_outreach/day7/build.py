@@ -241,15 +241,9 @@ def render_ad(r, p: dict, rec: dict) -> bytes:
 
 
 def render_phone(draft: str, code: str, who: str) -> bytes:
-    tpl = (phone.HERE / "phone.html").read_text(encoding="utf-8")
-    page_html = tpl.replace("{{DRAFT}}", H.escape(draft)).replace("{{REPLY}}", H.escape(f"Y{code}")) \
-                   .replace("{{SENT}}", H.escape(f"Sent to {who}."))
-    pg = S.start().phone_ctx.new_page()
-    try:
-        pg.set_content(page_html, wait_until="load")
-        return pg.locator("#phone").screenshot(type="png")
-    finally:
-        pg.close()
+    """Joey's real iPhone screenshot with only the words changed (shot.py, 10/24: the drawn phone "looks so fake")."""
+    from . import shot
+    return shot.render(draft, code, who)
 
 
 def _paras(text: str) -> str:

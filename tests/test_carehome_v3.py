@@ -175,3 +175,19 @@ def test_image_model_tells_what_a_photo_shows():
         return
     assert set(seen) >= {"building", "people", "inside", "sign", "bad", "top"}
     assert abs(sum(v for k, v in seen.items() if k != "top") - 1) < 0.01
+
+
+def test_phone_picture_is_the_real_screenshot_with_new_words():
+    import io
+    from datetime import date
+    from PIL import Image
+    from surven_outreach.day7 import phone, shot
+    base = Image.open(shot.BASE).convert("RGB")
+    body = phone.ads_email("Kevin", "Morningstar Of Pasadena", date(2026, 8, 20), date(2026, 10, 24))
+    im = Image.open(io.BytesIO(shot.render(phone.draft_text("E38", "Kevin T", body), "E38", "Kevin T"))).convert("RGB")
+    assert im.width == base.width
+    assert im.crop((0, 0, 924, 330)).tobytes() == base.crop((0, 0, 924, 330)).tobytes()  # status bar + header untouched
+    assert im.crop((0, im.height - 180, 924, im.height)).tobytes() == base.crop((0, 1820, 924, 2000)).tobytes()
+    long = phone.ads_email("Jo", "The Tradition Lovers Lane Assisted Living And Memory Care", date(2025, 12, 11))
+    assert len(shot.wrap(phone.draft_text("E81", "Jo M", long))) > shot.LINES0  # a long name adds lines
+    assert "tour by itself" in body

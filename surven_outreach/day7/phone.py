@@ -28,7 +28,7 @@ def _hi(first: str) -> str:
 
 def ads_email(first: str, home: str, start: date, today: date | None = None) -> str:
     return (f"{_hi(first)} I saw {home} has Facebook ads running since {since(start, today)}.\n\n"
-            "If follow-up takes forever, I built a free tool for senior living that gets families to tour on its own "
+            "If follow-up takes forever, I built a free tool for senior living that gets families to tour by itself "
             "even if you’re busy caring for a resident.\n\n"
             "And yes, it sounds human.\n\nIt wrote this email.\n\n"
             "Reply “yes” and I’ll let you give it a try.\n\nJoey")
