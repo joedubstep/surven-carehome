@@ -167,8 +167,11 @@ def _try(req, url: str, src: str, final_url: str = "", small: bool = False) -> d
     if seen["bad"] >= 0.5:  # flowers, a headshot, a costume party, a wreath, a poster, a map...
         return None
     group = max(TIER, key=lambda g: seen[g])
+    tier = TIER[group]
+    if group == "people" and src in ("website", "web search"):  # often stock: a real photo of the place comes first
+        tier = 0.9
     return {"photo": final_url or url, "from": src, "w": wh[0], "h": wh[1], "shows": group,
-            "sure": seen[group], "seen": seen["top"], "score": (TIER[group], TRUST.get(src, 0), seen[group])}
+            "sure": seen[group], "seen": seen["top"], "score": (tier, TRUST.get(src, 0), seen[group])}
 
 
 def best_of(req, urls: list[str], src: str, n: int = 14, size=None, small: bool = False) -> dict | None:
@@ -344,7 +347,9 @@ def pick_search(ctx, req, name: str, address: str, city: str) -> dict | None:
             continue
         dom = domain_of(page_url)
         own = any(w in dom for w in words)
-        if not (own or words & _words(title)):
+        town = bool(city) and city.lower() in f"{title} {page_url}".lower().replace("-", " ")
+        named = len(words & _words(title)) >= min(2, len(words))  # "Inn At Poland Way" also found a Vermont inn
+        if not (own or (named and town)):  # "The Pavilion" alone found a park pavilion
             continue
         hits.append((0 if own else 1 if DIRECTORY.search(dom) else 2, u))
     return best_of(req, [u for _, u in sorted(hits, key=lambda t: t[0])], "web search", n=10)
@@ -378,7 +383,7 @@ def pick(website: str, email: str, max_tries: int = 12, browser=None, place: tup
     if link:
         found.append(pick_facebook(ctx, req, link, home))
     found = [f for f in found if f and f.get("photo")]
-    if place and not any(f["shows"] in ("building", "people") for f in found):
+    if place and not found:  # no real photo anywhere: search by name (10/24: Meadowlark Pointe's own gallery)
         found.append(pick_search(ctx, req, *place))
         found = [f for f in found if f and f.get("photo")]
     site_out = (web or {}).get("site") or site

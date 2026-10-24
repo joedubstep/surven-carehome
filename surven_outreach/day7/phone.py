@@ -38,7 +38,9 @@ def noads_email(first: str, home: str) -> tuple[str, str]:
     """-> (text above the ad image, text below it)."""
     return (f"{_hi(first)} I checked {home} on the Facebook Ad Library and saw there were no ads running. "
             "So I made you one for free to use.",
-            "Reply “yes” and I’ll make you 2 more.\n\nJoey")
+            # value line above the ask, Joey 10/24 (his words)
+            "Helping senior living communities get exclusive, private pay move-ins without the placement fee is the "
+            "only thing I do.\n\nReply “yes” and I’ll make you 2 more.\n\nJoey")
 
 
 def short_name(first: str, last: str, home: str) -> str:
