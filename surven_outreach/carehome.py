@@ -631,7 +631,8 @@ def cloud_per_run(now: datetime) -> int:
     return max(1, min(6, int((gap + 5) // 10)))
 
 
-MAIL_SEND = {"valid"}  # mailbox check verdicts that may get a first email
+MAIL_SEND = {"valid", "published"}  # mailbox verdicts that may get a first email (published: printed on their own
+                                    # site, on a server that says yes to everything; enrich_mail.py)
 
 
 def mail_verdicts() -> dict:

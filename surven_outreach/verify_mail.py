@@ -115,12 +115,14 @@ def check_domain(domain: str, addrs: list[str]) -> dict[str, dict]:
     return {a: {"status": "unknown", "code": 0, "msg": last_err or "no answer", "checked": today} for a in addrs}
 
 
-def to_check(con, recheck_days: int = 45) -> list[str]:
-    """Addresses of homes not emailed yet: never checked, an unknown from an earlier day, or an old check."""
+def to_check(con, recheck_days: int = 45, sent: bool = False) -> list[str]:
+    """Addresses of homes not emailed yet: never checked, an unknown from an earlier day, or an old check.
+    sent=True: the homes already emailed instead, to compare verdicts with the real bounces (10/24)."""
     done = load()
     today = date.today()
     out = []
-    for (email,) in con.execute("SELECT email FROM prospects WHERE status='queued' AND email != ''"):
+    where = "status != 'queued'" if sent else "status='queued'"
+    for (email,) in con.execute(f"SELECT email FROM prospects WHERE {where} AND email != ''"):
         e = email.strip().lower()
         v = done.get(e)
         if v:
@@ -133,9 +135,9 @@ def to_check(con, recheck_days: int = 45) -> list[str]:
     return sorted(set(out))
 
 
-def run(limit: int = 4000, minutes: int = 45, workers: int = 8) -> Counter:
+def run(limit: int = 4000, minutes: int = 45, workers: int = 8, sent: bool = False) -> Counter:
     con = sqlite3.connect(D / "carehome.db")
-    addrs = to_check(con)[:limit]
+    addrs = to_check(con, sent=sent)[:limit]
     by_domain: dict[str, list[str]] = defaultdict(list)
     for a in addrs:
         by_domain[a.split("@")[-1]].append(a)
@@ -148,7 +150,7 @@ def run(limit: int = 4000, minutes: int = 45, workers: int = 8) -> Counter:
         dom, group = item
         if time.time() > stop_at:
             return
-        for i in range(0, len(group), 20):  # at most 20 addresses a connection
+        for i in range(0, len(group), 4):  # a few addresses a connection (Microsoft answers "too many" past that)
             got = check_domain(dom, group[i:i + 20])
             with lock:
                 results.update(got)
@@ -171,6 +173,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=4000)
     ap.add_argument("--minutes", type=int, default=45)
+    ap.add_argument("--sent", action="store_true", help="check the homes already emailed (to compare with real bounces)")
     a = ap.parse_args()
-    run(a.limit, a.minutes)
+    run(a.limit, a.minutes, sent=a.sent)
     print("all verdicts so far:", dict(summary()))

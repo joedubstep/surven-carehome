@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "run | dry | stats | status | seed | day7 | verify | photo-check | port-check"
+        description: "run | dry | stats | status | seed | day7 | verify | calibrate | photo-check | port-check"
         default: run
       to:
         description: "seed only: test inboxes, space separated"
@@ -92,9 +92,14 @@ jobs:
       - name: Day 7 prep (Ad Library check + photo pick for homes due by tomorrow)
         if: steps.pick.outputs.task == 'day7'
         run: python -m surven_outreach.carehome day7-prep 2>&1 | tee -a data/carehome/task.log
-      - name: Mailbox check (asks each home's mail server if the mailbox exists; sends nothing)
+      - name: Mailbox check, then better addresses for the bad ones (asks mail servers; sends nothing)
         if: steps.pick.outputs.task == 'verify'
-        run: python -m surven_outreach.verify_mail --minutes 45 2>&1 | tee -a data/carehome/task.log
+        run: |
+          python -m surven_outreach.verify_mail --minutes 25 2>&1 | tee -a data/carehome/task.log
+          python -m surven_outreach.enrich_mail --minutes 22 2>&1 | tee -a data/carehome/task.log
+      - name: Calibrate (mailbox check on the homes already emailed, to compare with real bounces)
+        if: steps.pick.outputs.task == 'calibrate'
+        run: python -m surven_outreach.verify_mail --sent --minutes 40 2>&1 | tee -a data/carehome/task.log
       - name: Mail port check (can this machine reach mail servers on port 25?)
         if: steps.pick.outputs.task == 'port-check'
         run: |

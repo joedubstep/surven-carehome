@@ -78,6 +78,12 @@ def status_by_email():
             label = {"queued": "Not emailed yet", "bounced": "Bounced", "opted_out": "Opted out",
                      "skipped": "Skipped"}.get(st, st.title())
         out[(r["email"] or "").strip().lower()] = [label, step, r["last_sent_on"] or ""]
+    try:  # 10/24: a home whose address was replaced (enrich_mail.py) still shows on its sheet row (the old address)
+        for old, rec in json.load(open(D / "email_enrich.json", encoding="utf-8")).items():
+            if rec.get("new") and rec["new"] in out and old not in out:
+                out[old] = out[rec["new"]]
+    except (OSError, ValueError):
+        pass
     return out
 
 
