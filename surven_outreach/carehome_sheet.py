@@ -26,18 +26,82 @@ def api(method, url, body=None, tok=None):
         raise RuntimeError(f"Google API {e.code}: {e.read()[:400].decode(errors='ignore')}")
 
 
+# 10/24, Joey: the sheet shows each home's stage. Day N = the day of the 4-email run (days 1, 3, 7, 14); homes still on
+# the old 6-email run show the nearest stage. Replies are sorted by what they said.
+DAY = {1: "Day 1 emailed", 2: "Day 3 emailed", 3: "Day 7 emailed", 4: "Day 14 emailed"}
+OLD_DAY = {1: "Day 1 emailed", 2: "Day 3 emailed", 3: "Day 7 emailed", 4: "Day 7 emailed", 5: "Day 14 emailed",
+           6: "Day 14 emailed"}
+STAGE_COLORS = [  # (label, background, white bold text?)
+    ("Day 1 emailed", "#E3F0FC", False), ("Day 3 emailed", "#CFE3F8", False), ("Day 7 emailed", "#B6D3F2", False),
+    ("Day 14 emailed", "#9C9C9C", False), ("Opted out", "#E6E6E6", False), ("Bounced", "#F5C6C6", False),
+    ("Warm reply", "#B7E1B7", False), ("Not a fit", "#F9DDB5", False), ("Yes to lead magnet", "#3E9E4F", True),
+]
+WORD_NUM = {"zero": 0, "no": 0, "none": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+            "eight": 8, "nine": 9, "ten": 10, "a couple": 2, "a few": 3, "several": 4}
+
+
+def reply_stage(said: str, step: int, seq: str) -> str:
+    """What a reply means for the campaign: a yes to the free offer, a room count, or a plain reply. The offer is the
+    day 7 gift on the 4-email run; on the old run every email but 4 and 5 offered the one-page plan."""
+    import re
+    s = (said or "").lower()
+    s = re.sub(r"\[cid:[^\]]*\]|<[^>]*>|https?://\S+|\S+@\S+|\+?\d[\d\-. ()]{6,}\d", " ", s)  # signatures, phones
+    offer = step >= 3 if seq == "v3" else step in (1, 2, 3, 6)
+    if offer and re.search(r"\b(yes|yeah|yep|sure|ok|okay|please|interested|send)\b", s):
+        return "Yes to lead magnet"
+    if re.search(r"\b(we are full|we're full|fully occupied|no (open )?(rooms|beds|vacanc\w*|openings))\b|\bfull\b", s):
+        return "Not a fit"
+    m = re.search(r"\b(\d{1,3})\b", s)
+    n = int(m.group(1)) if m else next((v for k, v in WORD_NUM.items() if re.search(rf"\b{k}\b", s)), None)
+    if n is not None:
+        return "Warm reply" if n >= 3 else "Not a fit"
+    return "Warm reply"
+
+
 def status_by_email():
-    """email -> (status, emails sent, last email date) from carehome.db."""
+    """email -> (stage, emails sent, last email date) from carehome.db."""
     con = sqlite3.connect(D / "carehome.db"); con.row_factory = sqlite3.Row
+    try:
+        seq = {x["id"]: x.get("seq", "") for x in json.load(open(D / "queue.json", encoding="utf-8"))}
+    except (OSError, ValueError):
+        seq = {}
     out = {}
     for r in con.execute("SELECT * FROM prospects"):
         st, step = r["status"], r["current_step"] or 0
-        label = {"queued": "Queued", "replied": "Replied", "bounced": "Bounced", "opted_out": "Opted out",
-                 "completed": "All 6 sent, no reply", "skipped": "Skipped"}.get(st, st.title())
-        if st == "active":
-            label = f"Emailed {step} of 6"
+        v3 = seq.get(r["id"]) == "v3"
+        if st in ("active", "completed"):
+            label = (DAY if v3 else OLD_DAY).get(step, "Day 14 emailed")
+        elif st == "replied":
+            said = (r["stopped_reason"] or "").split(":", 1)[-1]
+            label = reply_stage(said, step, "v3" if v3 else "")
+        else:
+            label = {"queued": "Not emailed yet", "bounced": "Bounced", "opted_out": "Opted out",
+                     "skipped": "Skipped"}.get(st, st.title())
         out[(r["email"] or "").strip().lower()] = [label, step, r["last_sent_on"] or ""]
     return out
+
+
+def set_stage_colors():
+    """Replace the Homes tab's color rules with one per stage (exact match, so "Day 1" never colors "Day 14")."""
+    sid = json.load(open(MAP))["id"]; tok = access_token()
+    meta = api("GET", BASE + f"{sid}?fields=sheets(properties(sheetId,title),conditionalFormats)", tok=tok)
+    sh = next(s for s in meta["sheets"] if s["properties"]["title"] == TAB)
+    gid, n_old = sh["properties"]["sheetId"], len(sh.get("conditionalFormats", []))
+    head = sheet_values(sid, tok, f"{TAB}!1:1")[0]
+    col = head.index("Status")
+    rng = {"sheetId": gid, "startRowIndex": 1, "startColumnIndex": col, "endColumnIndex": col + 1}
+
+    def rgb(h):
+        return {"red": int(h[1:3], 16) / 255, "green": int(h[3:5], 16) / 255, "blue": int(h[5:7], 16) / 255}
+    reqs = [{"deleteConditionalFormatRule": {"sheetId": gid, "index": 0}} for _ in range(n_old)]
+    for i, (label, bg, bold) in enumerate(STAGE_COLORS):
+        fmt = {"backgroundColor": rgb(bg)}
+        if bold:
+            fmt["textFormat"] = {"bold": True, "foregroundColor": rgb("#FFFFFF")}
+        reqs.append({"addConditionalFormatRule": {"index": i, "rule": {"ranges": [rng], "booleanRule": {
+            "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": label}]}, "format": fmt}}}})
+    api("POST", BASE + f"{sid}:batchUpdate", {"requests": reqs}, tok)
+    print(f"sheet: {n_old} old color rules replaced with {len(STAGE_COLORS)} stage colors")
 
 
 def col_letter(i):
@@ -201,5 +265,7 @@ def sync():
 if __name__ == "__main__":
     if sys.argv[1:2] == ["adopt"]:
         adopt(sys.argv[2])
+    elif sys.argv[1:2] == ["colors"]:
+        set_stage_colors()
     else:
         sync()

@@ -7,7 +7,10 @@ from email.message import EmailMessage
 TRANSIENT = (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, ConnectionError, TimeoutError, OSError)
 
 
-def build_message(sender_name, sender_email, to, subject, body, message_id, extra_headers: dict) -> EmailMessage:
+def build_message(sender_name, sender_email, to, subject, body, message_id, extra_headers: dict,
+                  html: str | None = None, images: list | None = None) -> EmailMessage:
+    """Plain text by default. With html, a text + html email; each image (cid, bytes, subtype) sits inside the html
+    part, shown in the email itself (cold email day 7, Joey 10/24: "put the actual ad in the email")."""
     msg = EmailMessage()
     msg["From"] = f"{sender_name} <{sender_email}>"
     msg["To"] = to
@@ -18,6 +21,12 @@ def build_message(sender_name, sender_email, to, subject, body, message_id, extr
             del msg["Subject"]
         msg[k] = v
     msg.set_content(body)  # plain text
+    if html:
+        msg.add_alternative(html, subtype="html")
+        part = msg.get_payload()[1]
+        for cid, data, subtype in images or []:
+            part.add_related(data, maintype="image", subtype=subtype, cid=f"<{cid}>",
+                             filename=f"{cid}.{'jpg' if subtype == 'jpeg' else subtype}", disposition="inline")
     return msg
 
 

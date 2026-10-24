@@ -1,0 +1,4 @@
+/* Latin subsets from Google Fonts (SIL Open Font License). Stored locally so renders never depend on the network. */
+@font-face { font-family: 'EB Garamond'; font-style: normal; font-weight: 500; src: url('EBGaramond-500.woff2') format('woff2'); }
+@font-face { font-family: 'EB Garamond'; font-style: italic; font-weight: 500; src: url('EBGaramond-500-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Montserrat'; font-style: normal; font-weight: 400 800; src: url('Montserrat-var.woff2') format('woff2'); }

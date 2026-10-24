@@ -657,8 +657,6 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
         step = r["current_step"] + 1
         if step > last_step(p):
             continue
-        if (p.get("emails", {}).get(str(step)) or {}).get("pending"):
-            continue  # v3 day 7: waits until its per-home email (ad image or tool picture) is built
         if step == 1:
             if r["status"] != "queued":
                 continue
@@ -694,6 +692,16 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
 
 def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) -> None:
     em = dict(p["emails"][str(step)])
+    if em.get("pending"):  # v3 day 7: made for this home now (Ad Library check, then the free ad or the phone picture)
+        if dry:
+            log(f"DRY would build and send day 7 for {r['id']}")
+            return "dry"
+        try:
+            from .day7 import build as day7
+            em = day7.build(r, p)
+        except Exception as ex:
+            log(f"day 7 not built for {r['id']} (will retry next run): {ex!r}"[:300])
+            return "failed"
     # 10/4: some state lists put a title in the name field ("LVN", "Ms"), so Greens Haven got "Hey Lvn,". Drop it.
     if (r["first_name"] or "").strip().lower() in TITLE_NAMES:
         import re
@@ -709,7 +717,8 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
         log(f"DRY would send {r['id']} step {step} from {from_addr} to {r['email']} subj={subject!r}")
         return "dry"
     msg = build_message(FROM_NAME, from_addr, r["email"], subject, em["body"], mid,
-                        {**extra, "Date": format_datetime(datetime.now().astimezone())})
+                        {**extra, "Date": format_datetime(datetime.now().astimezone())},
+                        html=em.get("html"), images=em.get("images"))
     try:
         sender.send(msg)
     except Exception as ex:
@@ -800,6 +809,11 @@ def cmd_run(con, dry: bool) -> None:
             if send_one(con, cfg, smtp[a], r, p, step, dry, a) == "blocked":
                 blocked = True
                 break
+    try:
+        from .day7 import build as day7
+        day7.close()
+    except Exception:
+        pass
     if CLOUD and not dry and not blocked:  # a blocked run doesn't count, so the next run catches up
         LAST_RUN_FILE.write_text(json.dumps({"at": now.isoformat()}))
     if not dry:
@@ -808,6 +822,47 @@ def cmd_run(con, dry: bool) -> None:
             carehome_sheet.sync()
         except BaseException as ex:  # a sheet problem must never block the campaign
             log(f"sheet sync error: {ex!r}")
+
+
+def day7_due(con, queue: dict, today: date, within: int = 1) -> list:
+    """v3 homes whose day 7 falls today or within `within` days and have no fresh Ad Library record yet."""
+    from .day7 import build as day7
+    done = day7.load()
+    out = []
+    for r in con.execute("SELECT * FROM prospects WHERE status='active' AND current_step=2"):
+        p = queue.get(r["id"])
+        if not p or p.get("seq") != "v3" or not r["first_sent_on"]:
+            continue
+        due = date.fromisoformat(r["first_sent_on"]) + timedelta(days=SEQ_V3[3])
+        rec = done.get(r["id"])
+        fresh = rec and (today - date.fromisoformat(rec["checked"])).days <= 3
+        if due <= today + timedelta(days=within) and not fresh:
+            out.append((r, p))
+    return out
+
+
+def cmd_day7_prep(con, limit: int = 400) -> None:
+    """Nightly (Joey 10/24): the Ad Library check and photo pick for every home whose day 7 is due by tomorrow, so the
+    morning sends only make the pictures. Anything missed here is done on the spot at send time."""
+    from .day7 import build as day7
+    items = day7_due(con, load_queue(), date.today())[:limit]
+    log(f"day7-prep: {len(items)} home(s) to check")
+    n = {"yes": 0, "no": 0, "unsure": 0, "error": 0}
+    try:
+        for r, p in items:
+            try:
+                rec = day7.prep(r, p)
+                n[rec["ads"] if rec["ads"] in n else "error"] += 1
+            except Exception as ex:
+                n["error"] += 1
+                log(f"day7-prep {r['id']}: {ex!r}"[:300])
+                if ex.__class__.__name__ == "RateLimited":  # every later check would fail the same way
+                    log("day7-prep: Meta is rate limiting this machine, stopping; send time will check what is left")
+                    break
+            time.sleep(2)
+    finally:
+        day7.close()
+    log(f"day7-prep done: running ads {n['yes']}, none {n['no']}, unsure {n['unsure']}, errors {n['error']}")
 
 
 def cmd_status(con) -> None:
@@ -822,7 +877,7 @@ def main(argv=None) -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="carehome")
     ap.add_argument("cmd", choices=["load", "run", "status", "backfill-sent", "alerts", "alert-texts", "rescan",
-                                    "rescue-spam"])
+                                    "rescue-spam", "day7-prep"])
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--ack", action="store_true")
     a = ap.parse_args(argv)
@@ -843,6 +898,8 @@ def main(argv=None) -> None:
     elif a.cmd == "run":
         cmd_load(con)
         cmd_run(con, a.dry)
+    elif a.cmd == "day7-prep":
+        cmd_day7_prep(con)
     elif a.cmd == "rescan":
         scan_replies_full(con, load_config())
     else:

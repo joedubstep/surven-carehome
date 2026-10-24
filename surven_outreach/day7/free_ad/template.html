@@ -1,0 +1,162 @@
+<!doctype html>
+<!--
+  Free still-image Facebook ad, 1080x1080. Filled and rendered by render.py.
+  Layout copies what Wisdom First's US client ads share (Torbrook, The Parkdale, 2026-10-23 pull):
+    - a solid brand-color band across the top with small tracked capitals: care type + city
+    - one full-bleed real photo under it (building in good light, or a smiling resident)
+    - a two-line serif headline and one plain sans line, bottom-left, white on a soft dark fade
+    - the home's name as a small tracked wordmark, bottom-right
+  Open this file in a browser to see it with the sample values below.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Free ad</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+  :root {
+    --brand: #24435E;      /* band + button text; render.py sets it */
+    --focus: 50% 50%;      /* object-position of the photo; render.py sets it */
+    --accent: #9FC3DA;     /* light tint of the brand color for the text-style button underline */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1080px; height: 1080px; background: #fff; }
+  .ad { position: relative; width: 1080px; height: 1080px; overflow: hidden; background: #2b2b2b; }
+
+  .band {
+    position: absolute; top: 0; left: 0; right: 0; height: 96px; z-index: 3;
+    background: var(--brand); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font: 600 30px/1 'Montserrat', Arial, sans-serif; letter-spacing: .16em; text-transform: uppercase;
+    white-space: nowrap; padding: 0 40px;
+    border-bottom: 5px solid rgba(255, 255, 255, .92);
+  }
+
+  .photo { position: absolute; top: 96px; left: 0; right: 0; bottom: 0; }
+  .photo img { width: 100%; height: 100%; object-fit: cover; object-position: var(--focus); display: block; }
+  .shade {
+    position: absolute; top: 96px; left: 0; right: 0; bottom: 0; z-index: 1;
+    background:
+      linear-gradient(to top, rgba(0,0,0,.74) 0%, rgba(0,0,0,.52) 30%, rgba(0,0,0,.18) 52%, rgba(0,0,0,0) 66%),
+      linear-gradient(to right, rgba(0,0,0,.28) 0%, rgba(0,0,0,0) 55%);
+  }
+
+  /* Joey 10/24: a smooth brand-color fade from the bottom-left corner at 45 degrees, lighter than The Springs
+     Living's solid left panel, so the photo still shows. render.py --shade corner turns it on. */
+  .ad.corner .shade {
+    background:
+      linear-gradient(45deg,
+        color-mix(in srgb, var(--brand) 92%, transparent) 0%,
+        color-mix(in srgb, var(--brand) 74%, transparent) 27%,
+        color-mix(in srgb, var(--brand) 42%, transparent) 48%,
+        color-mix(in srgb, var(--brand) 0%, transparent) 68%),
+      linear-gradient(to top, rgba(0,0,0,.28) 0%, rgba(0,0,0,0) 40%);
+  }
+  .copy {
+    position: absolute; left: 72px; bottom: 76px; z-index: 2; width: 640px; color: #fff;
+    text-shadow: 0 2px 14px rgba(0,0,0,.35);
+  }
+  .headline {
+    font: 500 92px/1.02 'EB Garamond', Georgia, serif; letter-spacing: -.005em;
+  }
+  .headline em { font-style: italic; }
+  .line {
+    margin-top: 22px; font: 500 36px/1.28 'Montserrat', Arial, sans-serif; letter-spacing: .005em;
+  }
+  .cta {
+    display: inline-block; margin-top: 34px;
+    background: #fff; color: var(--brand); text-shadow: none;
+    font: 700 26px/1 'Montserrat', Arial, sans-serif; letter-spacing: .16em; text-transform: uppercase;
+    padding: 22px 38px; border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.25);
+  }
+  .ad.cta-text .cta {                 /* a plain line with a short accent underline, no box */
+    background: none; color: #fff; box-shadow: none; padding: 0; text-shadow: 0 2px 10px rgba(0,0,0,.4);
+    font: 600 32px/1.25 'Montserrat', Arial, sans-serif; letter-spacing: .01em; text-transform: none;
+    margin-top: 30px;
+  }
+  .ad.cta-text .cta::after {
+    content: ''; display: block; width: 72px; height: 4px; margin-top: 14px; border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .mark {
+    position: absolute; right: 64px; bottom: 80px; z-index: 2; max-width: 300px; text-align: right;
+    color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,.45);
+    font: 600 22px/1.3 'Montserrat', Arial, sans-serif; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .mark b { display: block; font-weight: 700; }
+  .mark .sub { display: block; font-weight: 500; font-size: .82em; margin-top: 4px; opacity: .95; }
+  .mark .rule { display: block; width: 48px; height: 2px; background: rgba(255,255,255,.85); margin: 0 0 14px auto; }
+  .mark img { display: none; max-width: 260px; max-height: 120px; background: #fff; padding: 14px 18px; border-radius: 8px; }
+  .mark.has-logo .rule, .mark.has-logo .name { display: none; }
+  .mark.has-logo img { display: inline-block; }
+</style>
+</head>
+<body>
+<div class="ad" id="ad">
+  <div class="band" id="band">Assisted Living · Conyers, GA</div>
+  <div class="photo"><img id="photo" alt="" src=""></div>
+  <div class="shade"></div>
+  <div class="copy" id="copy">
+    <div class="headline" id="headline">You can start with a visit</div>
+    <div class="line" id="line">Assisted living for your parent near Conyers.</div>
+    <div class="cta" id="cta">Book a tour</div>
+  </div>
+  <div class="mark" id="mark"><span class="rule"></span><span class="name" id="name">The Retreat at Conyers</span><img id="logo" alt=""></div>
+</div>
+<script>
+// render.py calls fill(data). Text goes in with textContent, so names with & or < are safe.
+window.fill = async function (d) {
+  const $ = id => document.getElementById(id);
+  const root = document.documentElement.style;
+  if (d.brand) root.setProperty('--brand', d.brand);
+  if (d.focus) root.setProperty('--focus', d.focus);
+  if (d.accent) root.setProperty('--accent', d.accent);
+  $('band').textContent = d.band;
+  $('headline').textContent = d.headline;
+  $('line').textContent = d.line;
+  $('cta').textContent = d.cta;
+  // Wordmark: "Inspired Living" bold, "at Alpharetta" lighter on the next line (like "TORBROOK senior care").
+  const nm = $('name'); nm.textContent = '';
+  const parts = d.name.match(/^(.+?)\s+((?:at|of|in|on|by)\s+.+)$/i);
+  const b1 = document.createElement('b'); b1.textContent = parts ? parts[1] : d.name; nm.appendChild(b1);
+  if (parts) { const s2 = document.createElement('span'); s2.className = 'sub'; s2.textContent = parts[2]; nm.appendChild(s2); }
+  if (d.ctaStyle === 'text') $('ad').classList.add('cta-text');
+  if (d.shade === 'corner') $('ad').classList.add('corner');
+  if (d.logo) { $('logo').src = d.logo; $('mark').classList.add('has-logo'); }
+
+  const img = $('photo');
+  await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('photo failed to load')); img.src = d.photo; });
+  if (d.logo) await new Promise(ok => { const l = $('logo'); if (l.complete) ok(); else { l.onload = ok; l.onerror = ok; } });
+  await document.fonts.ready;
+
+  // Fit: band on one line; copy block no taller than 430px and clear of the wordmark.
+  const band = $('band');
+  let bs = 30;
+  while (band.scrollWidth > band.clientWidth && bs > 18) { bs -= 1; band.style.fontSize = bs + 'px'; }
+  const mark = $('mark');
+  const copy = $('copy');
+  const markW = mark.getBoundingClientRect().width;
+  copy.style.width = Math.min(640, 1080 - 72 - 64 - markW - 40) + 'px';
+  const h = $('headline'), line = $('line');
+  let hs = 92, ls = 36;
+  const tooBig = () => copy.getBoundingClientRect().height > 430 || h.scrollWidth > copy.clientWidth;
+  while (tooBig() && hs > 60) { hs -= 2; ls = Math.max(28, ls - 0.5); h.style.fontSize = hs + 'px'; line.style.fontSize = ls + 'px'; }
+
+  const r = img.getBoundingClientRect();
+  const scale = Math.max(r.width / img.naturalWidth, r.height / img.naturalHeight);
+  return { photoW: img.naturalWidth, photoH: img.naturalHeight, upscale: Math.round(scale * 100) / 100,
+           headlinePx: hs, linePx: ls, bandPx: bs };
+};
+
+// Standalone preview with a neutral placeholder photo.
+if (!window.__RENDER__) {
+  document.getElementById('photo').src = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="984"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="#a9c4dc"/><stop offset="1" stop-color="#6b7f69"/></linearGradient></defs>' +
+    '<rect width="1080" height="984" fill="url(#g)"/></svg>');
+}
+</script>
+</body>
+</html>
