@@ -8,6 +8,7 @@ on:
     - cron: "7 0-10,20-23 * * *"      # rest of the day: hourly reply/bounce check + reply texts to Joey
     - cron: "20 1 * * *"              # nightly stats to Notion (9:20 PM ET)
     - cron: "40 5 * * *"              # nightly day 7 prep: Ad Library check + photo pick (1:40 AM ET), Joey 10/24
+    - cron: "15 3 * * *"              # nightly mailbox check before first emails (11:15 PM ET), Joey 10/24
   # 9/29: GitHub's timer never fired on this new repo, so a Claude cloud routine also pushes an empty commit to
   # claude/tick every hour as a backup clock. Extra runs are harmless: daily caps and one-send-per-step hold.
   push:
@@ -15,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "run | dry | stats | status | seed | day7 | photo-check | port-check"
+        description: "run | dry | stats | status | seed | day7 | verify | photo-check | port-check"
         default: run
       to:
         description: "seed only: test inboxes, space separated"
@@ -78,6 +79,7 @@ jobs:
           if [ -z "$T" ]; then
             if [ "${{ github.event.schedule }}" = "20 1 * * *" ]; then T=stats; else T=run; fi
             if [ "${{ github.event.schedule }}" = "40 5 * * *" ]; then T=day7; fi
+            if [ "${{ github.event.schedule }}" = "15 3 * * *" ]; then T=verify; fi
             if [ "${{ github.event_name }}" = "push" ] && [ "$(date +%H)" = "21" ]; then T=stats; fi
           fi
           echo "task=$T" >> "$GITHUB_OUTPUT"
@@ -90,6 +92,9 @@ jobs:
       - name: Day 7 prep (Ad Library check + photo pick for homes due by tomorrow)
         if: steps.pick.outputs.task == 'day7'
         run: python -m surven_outreach.carehome day7-prep 2>&1 | tee -a data/carehome/task.log
+      - name: Mailbox check (asks each home's mail server if the mailbox exists; sends nothing)
+        if: steps.pick.outputs.task == 'verify'
+        run: python -m surven_outreach.verify_mail --minutes 45 2>&1 | tee -a data/carehome/task.log
       - name: Mail port check (can this machine reach mail servers on port 25?)
         if: steps.pick.outputs.task == 'port-check'
         run: |

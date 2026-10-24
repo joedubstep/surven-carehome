@@ -191,3 +191,24 @@ def test_phone_picture_is_the_real_screenshot_with_new_words():
     long = phone.ads_email("Jo", "The Tradition Lovers Lane Assisted Living And Memory Care", date(2025, 12, 11))
     assert len(shot.wrap(phone.draft_text("E81", "Jo M", long))) > shot.LINES0  # a long name adds lines
     assert "tour by itself" in body
+
+
+def test_mailbox_verdicts():
+    from surven_outreach.verify_mail import verdict
+    assert verdict(250, "2.1.5 OK", False) == "valid"
+    assert verdict(250, "2.1.5 OK", True) == "catch_all"
+    assert verdict(550, "5.1.1 The email account that you tried to reach does not exist", False) == "invalid"
+    assert verdict(550, "5.4.1 Recipient address rejected: Access denied. AS(201806281)", False) == "invalid"
+    assert verdict(554, "5.7.1 Service unavailable; Client host blocked using zen.spamhaus.org", False) == "unknown"
+    assert verdict(450, "4.2.0 Greylisted, try again later", False) == "unknown"
+    assert verdict(550, "5.1.1 recipient not found at corporate.example", False) == "invalid"
+
+
+def test_first_email_waits_for_a_checked_mailbox(monkeypatch):
+    con = db()
+    home(con, "ok", 0, None, None, status="queued")
+    home(con, "bad", 0, None, None, status="queued")
+    home(con, "unchecked", 0, None, None, status="queued")
+    monkeypatch.setattr(ch, "mail_verdicts", lambda: {"ok@x.com": {"status": "valid"}, "bad@x.com": {"status": "invalid"}})
+    q = {k: V3 for k in ("ok", "bad", "unchecked")}
+    assert due(con, q) == {("ok", 1)}

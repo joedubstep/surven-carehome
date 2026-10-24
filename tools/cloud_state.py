@@ -17,7 +17,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = "data/carehome/"
-CLOUD_OWNED = ["carehome.db", "day7.json", "senders.json", "scan_state.json", "last_run.json", "alerts_pending.jsonl", "alerts_inflight.jsonl",
+CLOUD_OWNED = ["carehome.db", "day7.json", "email_verify.json", "senders.json", "scan_state.json", "last_run.json", "alerts_pending.jsonl", "alerts_inflight.jsonl",
                "alerts_sent.jsonl", "warmup.json", "run.log", "task.log", "stats.log", "stats_task.log", "stats_notion_map.json",
                "build/notion_map.json"]
 LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.json", "lead_facts.json", "build/prospects.json",

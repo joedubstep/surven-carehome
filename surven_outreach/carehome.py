@@ -631,6 +631,14 @@ def cloud_per_run(now: datetime) -> int:
     return max(1, min(6, int((gap + 5) // 10)))
 
 
+MAIL_SEND = {"valid"}  # mailbox check verdicts that may get a first email
+
+
+def mail_verdicts() -> dict:
+    from . import verify_mail
+    return verify_mail.load()
+
+
 def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int = MAX_PER_RUN) -> list:
     """-> [(row, queue entry, step, sender address)]. Follow-ups go out from the home's own sender first;
     new homes then fill whichever ready sender has the most room left today."""
@@ -646,6 +654,7 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
         u, c = used[a], senders[a]
         return u["total"] < c["cap_total"] and u["run"] < per_run and (not new or u["new"] < c["cap_new"])
 
+    verdicts = mail_verdicts()
     follow, fresh = [], []
     for r in con.execute("SELECT * FROM prospects WHERE status IN ('queued','active') ORDER BY rank DESC, id"):
         p = queue.get(r["id"])
@@ -659,6 +668,10 @@ def due_items(con, queue: dict, now_utc: datetime, senders: dict, per_run: int =
             continue
         if step == 1:
             if r["status"] != "queued":
+                continue
+            # 10/24, Joey: bounce rate taken very seriously. A first email goes only to a mailbox its own mail server
+            # said exists (verify_mail.py); invalid, catch-all and unchecked homes wait.
+            if (verdicts.get((r["email"] or "").strip().lower()) or {}).get("status") not in MAIL_SEND:
                 continue
             fresh.append((r, p, step))
         else:
