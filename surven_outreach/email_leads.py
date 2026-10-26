@@ -243,6 +243,46 @@ def community_lines(f: dict) -> list:
     return out
 
 
+LIBRARY = "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US"
+
+
+def meta_line(pid: str, facts: dict) -> list:
+    """10/25, Joey: "another line that includes Meta Ads, yes or no. If it's a yes, then I would like a link to their
+    corresponding Facebook Ad Library". Uses the day 7 Ad Library check (day7.json) when it is under two weeks old,
+    else checks now and saves it for day 7. Only ads tied to the home count as yes (day7/adlib.py)."""
+    from datetime import date
+    from urllib.parse import quote
+    try:
+        from .day7 import build as day7, phone
+        rec = day7.load().get(pid)
+        if not rec or (date.today() - date.fromisoformat(rec["checked"])).days > 14:
+            queue = {x["id"]: x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8"))}
+            p = queue.get(pid)
+            if not p:
+                return []
+            from .day7.adlib import check_home
+            home = day7.home_name(p)
+            name = home if home != "your home" else day7._clean_license(facts.get("facility") or p.get("facility", ""))
+            res = check_home(day7.S.start().adlib(), name, facts.get("city", ""), facts.get("state", ""))
+            rec = {"checked": date.today().isoformat(), "ads": res.get("running_ads", ""), "count": res.get("active_ads", ""),
+                   "start": res.get("earliest_start", ""), "page": res.get("page_name", ""),
+                   "page_id": res.get("page_id", ""), "match": res.get("match", ""), "search": name}
+            saved = day7.load()
+            saved[pid] = {**(saved.get(pid) or {}), **rec}
+            day7.save(saved)
+    except Exception:
+        return ["Meta ads: could not check right now"]
+    if rec.get("ads") == "yes":
+        since = f", since {phone.since(date.fromisoformat(rec['start']))}" if rec.get("start") else ""
+        link = f"{LIBRARY}&view_all_page_id={rec['page_id']}" if rec.get("page_id") else ""
+        return [f"Meta ads: yes{since}", link] if link else [f"Meta ads: yes{since}"]
+    if rec.get("ads") == "unsure":
+        q = quote('"' + (rec.get("search") or rec.get("page") or facts.get("facility", "")) + '"')
+        return ["Meta ads: not sure (ads match the name, not tied to them)",
+                f"{LIBRARY}&q={q}&search_type=keyword_exact_phrase"]
+    return ["Meta ads: no"]
+
+
 def alert_text(item: dict, lead: dict | None) -> str:
     """Joey's text, in the agent's own shape ("Call now: 20. Iivory W ... Reply "20" to call.")."""
     who = short_name(item.get("from_name", ""), item.get("first_name") or "Owner")
@@ -256,6 +296,7 @@ def alert_text(item: dict, lead: dict | None) -> str:
     lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\""]
     facts = _facts(item.get("id", ""))
     lines += community_lines(facts)
+    lines += meta_line(item.get("id", ""), facts)
     lines.append(f"Phone: {phone}")
     ld = lead or {}
     src = ld.get("phone_from") or phone_source(ld.get("phone", ""), item.get("said", ""), "", facts)

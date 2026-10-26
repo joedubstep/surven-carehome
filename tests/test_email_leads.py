@@ -78,6 +78,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(ch, "ALERTS_SENT", tmp_path / "sent.jsonl")
     monkeypatch.setattr(ch, "log", lambda m: None)
     monkeypatch.setattr(ch, "QUIET", (99, -1))  # daytime unless a test says night
+    monkeypatch.setattr(el, "meta_line", lambda pid, facts: [])  # no Ad Library visits in tests
     return {"g": g, "sent": sent, "sms_ok": sms_ok, "tmp": tmp_path, "mp": monkeypatch}
 
 
@@ -248,3 +249,18 @@ def test_a_phone_joey_already_saved_is_never_overwritten(world):
     reply("tx-greens-haven-112104", "sjdn39love@gmail.com", "Greens Haven", "Yes please", "Shannon Green")
     ch.send_alert_texts()
     assert g.contacts["c1"]["phone"] == "+19404587787" and "Phone: (940) 458-7787" in world["sent"][0]
+
+
+def test_meta_ads_line_yes_links_the_ad_library_no_says_no(monkeypatch):
+    from datetime import date
+    from surven_outreach.day7 import build as day7
+    today = date.today().isoformat()
+    recs = {"a": {"checked": today, "ads": "yes", "start": "2026-08-20", "page_id": "106212728072360"},
+            "b": {"checked": today, "ads": "no"},
+            "c": {"checked": today, "ads": "unsure", "search": "Maple Grove"}}
+    monkeypatch.setattr(day7, "load", lambda: recs)
+    yes = el.meta_line("a", {})
+    assert yes[0].startswith("Meta ads: yes, since mid August") and yes[1].endswith("view_all_page_id=106212728072360")
+    assert el.meta_line("b", {}) == ["Meta ads: no"]
+    unsure = el.meta_line("c", {})
+    assert unsure[0].startswith("Meta ads: not sure") and "q=%22Maple%20Grove%22" in unsure[1]
