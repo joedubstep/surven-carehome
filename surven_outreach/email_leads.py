@@ -16,8 +16,12 @@ Phone and website are never guessed:
     on the contact (Joey may have fixed it by hand), then the facility's own number from its state license list,
     matched by license id (data/carehome/lead_facts.json, built by build/lead_facts.py from build/license_phones.py).
     Nothing found means "not found", never a nearby number.
-  - website: the state list's website when it has one, else the replier's business email domain, but only after the
-    page itself is fetched and names the facility, its city or its phone. Free mail (gmail...) gives no website.
+  - website (10/26, Joey: "beef up the system that grabs the website"; Fite Living Center wrote
+    www.fitelivingcentre.com in its signature from a Gmail address and the text said "not found"), in this order:
+    a website written in their reply or signature, the state list's website, the replier's business email domain,
+    the website on the home's Google Maps listing (same address). Each must open. The email domain also has to name
+    the facility, its city or its phone (the others are tied to the home by the reply, the license or the address).
+    Free mail (gmail...) gives no website.
 """
 import json
 import re
@@ -80,9 +84,21 @@ def pretty_phone(e164: str) -> str:
 
 
 def _page_text(url: str) -> str:
+    """The page's html; a site that refuses a plain download (403, bad certificate, JavaScript) opens in the browser."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0"})
-    with urllib.request.urlopen(req, timeout=12) as r:
-        return r.read(400_000).decode("utf-8", "ignore")
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return r.read(400_000).decode("utf-8", "ignore")
+    except Exception:
+        pass
+    from .day7 import build as day7
+    pg = day7.S.start().ctx.new_page()
+    try:
+        pg.goto(url, wait_until="domcontentloaded", timeout=30000)
+        pg.wait_for_timeout(2000)
+        return pg.content()
+    finally:
+        pg.close()
 
 
 def site_names_facility(url: str, facility: str, city: str, phone: str) -> bool:
@@ -97,17 +113,86 @@ def site_names_facility(url: str, facility: str, city: str, phone: str) -> bool:
             or (len(digits) == 10 and digits in re.sub(r"\D", "", html)))
 
 
-def find_website(pid: str, replier_email: str, facility: str) -> str:
-    f = _facts(pid)
-    if f.get("website"):
-        return f["website"]
-    dom = (replier_email or "").split("@")[-1].lower()
-    if not dom or dom in FREEMAIL:
-        return ""
-    for url in (f"https://{dom}", f"https://www.{dom}"):
-        if site_names_facility(url, facility or f.get("facility", ""), f.get("city", ""), f.get("phone", "")):
-            return url
+def site_loads(url: str) -> str:
+    """The address that opens: url, or its http:// form when the https one fails (Beach Terrace's certificate is
+    broken). "" when neither opens."""
+    for u in dict.fromkeys([url, re.sub(r"^https://", "http://", url)]):
+        try:
+            if len(_page_text(u)) > 500:
+                return u
+        except Exception:
+            pass
     return ""
+
+
+EMAIL_IN_TEXT = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+URL_IN_TEXT = re.compile(r"(?:https?://|www\.)[^\s<>\"'*()\[\],|]+|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
+                         r"\.(?:com|org|net|us|care|info|biz|co|health|homes|home|life|living|senior|community)\b"
+                         r"(?:/[^\s<>\"'*()\[\],|]*)?", re.I)
+# Links in a reply that are not the home's own site: social pages, directories, mail and meeting tools, and us.
+NOT_THEIR_SITE = re.compile(r"facebook|instagram|linkedin|twitter|\bx\.com|youtube|youtu\.be|tiktok|google|goo\.gl|"
+                            r"yelp|caring\.com|aplaceformom|seniorly|senioradvisor|bit\.ly|zoom\.us|calendly|surven|"
+                            r"improvmx|microsoft|outlook|office\.com|gmail|yahoo|apple\.com|icloud|mailchimp|"
+                            r"constantcontact|docusign|hipaa|adobe|dropbox", re.I)
+
+
+def sites_in_text(said: str) -> list:
+    """Websites written in the reply or its signature, as https://host ("*www.fitelivingcentre.com*" ->
+    https://www.fitelivingcentre.com). Email addresses are not websites."""
+    out = []
+    for u in URL_IN_TEXT.findall(EMAIL_IN_TEXT.sub(" ", said or "")):
+        host = re.sub(r"^https?://", "", u, flags=re.I).split("/")[0].split("?")[0].rstrip(".:;").lower()
+        if "." in host and not NOT_THEIR_SITE.search(host) and host.split(".")[-1].isalpha():
+            out.append(f"https://{host}")
+    return list(dict.fromkeys(out))
+
+
+def maps_website(pid: str, facility: str) -> str:
+    """The website on the home's Google Maps listing, when the listing is at the license address (day7/maps.py)."""
+    f = _facts(pid)
+    if not f.get("address"):
+        return ""
+    from .day7 import build as day7, maps
+    pg = day7.S.start().ctx.new_page()
+    try:
+        got = maps.find(pg, day7._clean_license(facility or f.get("facility", "")), f["address"], f.get("city", ""))
+    except Exception:
+        return ""
+    finally:
+        pg.close()
+    return got.get("website", "") if got.get("match") else ""
+
+
+def find_website(pid: str, replier_email: str, facility: str, said: str = "") -> dict:
+    """-> {"url", "from", "facebook"}: the home's own website, where it was found, and a Facebook Page link when that
+    is all a source gave (a Maps listing or state list whose "website" is their Facebook Page)."""
+    f = _facts(pid)
+    fac, city, phone = facility or f.get("facility", ""), f.get("city", ""), f.get("phone", "")
+    from .day7.adlib import facebook_links
+    fb = next(iter(facebook_links(said or "")), "")
+    for url in sites_in_text(said):
+        if opened := site_loads(url):
+            return {"url": opened, "from": "their reply", "facebook": fb}
+    if f.get("website"):
+        url = f["website"] if "://" in f["website"] else "https://" + f["website"]
+        if "facebook.com" in url.lower():
+            fb = fb or url
+        elif opened := site_loads(url):
+            return {"url": opened, "from": "state license", "facebook": fb}
+    dom = (replier_email or "").split("@")[-1].lower()
+    if dom and dom not in FREEMAIL:
+        for url in (f"https://{dom}", f"https://www.{dom}"):
+            if site_names_facility(url, fac, city, phone):
+                return {"url": url, "from": "their email address", "facebook": fb}
+    try:
+        url = maps_website(pid, fac)
+    except Exception:
+        url = ""
+    if url and "facebook.com" in url.lower():
+        return {"url": "", "from": "", "facebook": fb or url}
+    if url and (opened := site_loads(url)):
+        return {"url": opened, "from": "Google Maps", "facebook": fb}
+    return {"url": "", "from": "", "facebook": fb}
 
 
 def _code_of(contact: dict) -> int:
@@ -138,7 +223,9 @@ def prepare(item: dict) -> dict:
     if not email:
         raise ValueError("no replier email")
     facts = _facts(item["id"])
-    website = item.get("website") if "website" in item else find_website(item["id"], email, item.get("facility", ""))
+    site = ({"url": item["website"], "from": "", "facebook": ""} if "website" in item
+            else find_website(item["id"], email, item.get("facility", ""), item.get("said", "")))
+    website = site["url"]
     name = (item.get("from_name") or "").strip()
     first, _, last = name.partition(" ")
     body = {"locationId": LOCATION, "email": email, "companyName": item.get("facility", ""),
@@ -181,7 +268,8 @@ def prepare(item: dict) -> dict:
     if not item.get("noted"):
         when = item.get("at", datetime.now().isoformat(timespec="minutes"))[:16].replace("T", " ")
         _ghl("POST", f"/contacts/{cid}/notes", {"body": f"Cold email reply {when} ({item.get('facility', '')}, code E{n}): {item.get('said', '')[:1500]}"})
-    return {"code": f"E{n}", "phone": phone, "phone_from": phone_from, "website": website, "contact_id": cid}
+    return {"code": f"E{n}", "phone": phone, "phone_from": phone_from, "website": website,
+            "website_from": site["from"], "facebook": site["facebook"], "contact_id": cid}
 
 
 def phone_source(phone: str, said: str, saved: str, facts: dict) -> str:
@@ -246,16 +334,21 @@ def community_lines(f: dict) -> list:
 LIBRARY = "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US"
 
 
-def meta_line(pid: str, facts: dict) -> list:
+def meta_line(pid: str, facts: dict, lead: dict | None = None) -> list:
     """10/25, Joey: "another line that includes Meta Ads, yes or no. If it's a yes, then I would like a link to their
-    corresponding Facebook Ad Library". Uses the day 7 Ad Library check (day7.json) when it is under two weeks old,
-    else checks now and saves it for day 7. Only ads tied to the home count as yes (day7/adlib.py)."""
+    corresponding Facebook Ad Library". 10/26, Joey: "double, triple, quadruple check the Meta ads claim": a reply
+    always gets a fresh check that also opens the Facebook Page their website (or reply) links to and counts ads
+    that link to their website (day7/adlib.py check_home), saved for day 7 too. The line under it says how the Page
+    was tied to them. Only ads tied to the home count as yes. If Meta does not answer, the day 7 check (under two
+    weeks old) is used."""
     from datetime import date
     from urllib.parse import quote
+    ld = lead or {}
     try:
         from .day7 import build as day7, phone
-        rec = day7.load().get(pid)
-        if not rec or (date.today() - date.fromisoformat(rec["checked"])).days > 14:
+        old = day7.load().get(pid)
+        rec = old if old and old.get("v") == 2 and old.get("checked") == date.today().isoformat() else None
+        if not rec:
             queue = {x["id"]: x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8"))}
             p = queue.get(pid)
             if not p:
@@ -263,24 +356,40 @@ def meta_line(pid: str, facts: dict) -> list:
             from .day7.adlib import check_home
             home = day7.home_name(p)
             name = home if home != "your home" else day7._clean_license(facts.get("facility") or p.get("facility", ""))
-            res = check_home(day7.S.start().adlib(), name, facts.get("city", ""), facts.get("state", ""))
-            rec = {"checked": date.today().isoformat(), "ads": res.get("running_ads", ""), "count": res.get("active_ads", ""),
-                   "start": res.get("earliest_start", ""), "page": res.get("page_name", ""),
-                   "page_id": res.get("page_id", ""), "match": res.get("match", ""), "search": name}
-            saved = day7.load()
-            saved[pid] = {**(saved.get(pid) or {}), **rec}
-            day7.save(saved)
+            try:
+                res = check_home(day7.S.start().adlib(), name, facts.get("city", ""), facts.get("state", ""),
+                                 website=ld.get("website", ""), fb_links=[ld["facebook"]] if ld.get("facebook") else [])
+            except Exception:
+                if old and (date.today() - date.fromisoformat(old["checked"])).days <= 14:
+                    res = None
+                    rec = old
+                else:
+                    raise
+            if res is not None:
+                rec = {"v": 2, "checked": date.today().isoformat(), "ads": res.get("running_ads", ""),
+                       "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
+                       "page": res.get("page_name", ""), "page_id": res.get("page_id", ""),
+                       "match": res.get("match", ""), "how": res.get("how", ""), "search": name}
+                saved = day7.load()
+                saved[pid] = {**(saved.get(pid) or {}), **rec}
+                day7.save(saved)
     except Exception:
         return ["Meta ads: could not check right now"]
+    how = rec.get("how", "")
     if rec.get("ads") == "yes":
         since = f", since {phone.since(date.fromisoformat(rec['start']))}" if rec.get("start") else ""
         link = f"{LIBRARY}&view_all_page_id={rec['page_id']}" if rec.get("page_id") else ""
-        return [f"Meta ads: yes{since}", link] if link else [f"Meta ads: yes{since}"]
+        return [f"Meta ads: yes{since}"] + ([f"(how we know: {how})"] if how else []) + ([link] if link else [])
     if rec.get("ads") == "unsure":
         q = quote('"' + (rec.get("search") or rec.get("page") or facts.get("facility", "")) + '"')
         return ["Meta ads: not sure (ads match the name, not tied to them)",
                 f"{LIBRARY}&q={q}&search_type=keyword_exact_phrase"]
-    return ["Meta ads: no"]
+    page = rec.get("page") or "no name"
+    if rec.get("page_id") and how:
+        return ["Meta ads: no", f"(their Page, {page}, has 0 ads. How we know it's theirs: {how})"]
+    if rec.get("page_id"):
+        return ["Meta ads: none found", f"(closest Page by name, {page}, has 0 ads, but nothing ties it to them)"]
+    return ["Meta ads: none found (no Facebook Page found for them)"]
 
 
 def alert_text(item: dict, lead: dict | None) -> str:
@@ -296,13 +405,15 @@ def alert_text(item: dict, lead: dict | None) -> str:
     lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\""]
     facts = _facts(item.get("id", ""))
     lines += community_lines(facts)
-    lines += meta_line(item.get("id", ""), facts)
+    lines += meta_line(item.get("id", ""), facts, lead)
     lines.append(f"Phone: {phone}")
     ld = lead or {}
     src = ld.get("phone_from") or phone_source(ld.get("phone", ""), item.get("said", ""), "", facts)
     if src:
         lines.append(f"(from {src})")
     lines.append(f"Site: {site}")
+    if ld.get("website_from") and site != "not found":
+        lines.append(f"(from {ld['website_from']})")
     if not code:
         lines.append("Call code coming, GoHighLevel did not answer. Texting it when it does.")
     elif phone == "not found":

@@ -68,7 +68,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(el, "_GIVEN", {})
     monkeypatch.setattr(el, "_ghl", g)
     pages = {"https://inspiredlivingatalpharetta.com": "<title>Inspired Living at Alpharetta</title>",
-             "https://www.someothersite.com": "<title>Plumbing</title>"}
+             "https://www.someothersite.com": "<title>Plumbing</title>",
+             "https://maplecourt.com": "<title>Maple Court</title>" + " " * 600,
+             "https://www.fitelivingcentre.com": "<title>The Fite Living Centre</title>" + " " * 600}
     monkeypatch.setattr(el, "_page_text", lambda url: pages[url] if url in pages else (_ for _ in ()).throw(OSError("dns")))
     sent = []
     sms_ok = {"on": True}
@@ -78,7 +80,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(ch, "ALERTS_SENT", tmp_path / "sent.jsonl")
     monkeypatch.setattr(ch, "log", lambda m: None)
     monkeypatch.setattr(ch, "QUIET", (99, -1))  # daytime unless a test says night
-    monkeypatch.setattr(el, "meta_line", lambda pid, facts: [])  # no Ad Library visits in tests
+    monkeypatch.setattr(el, "meta_line", lambda pid, facts, lead=None: [])  # no Ad Library visits in tests
+    monkeypatch.setattr(el, "maps_website", lambda pid, facility: "")  # no Google Maps visits either
     return {"g": g, "sent": sent, "sms_ok": sms_ok, "tmp": tmp_path, "mp": monkeypatch}
 
 
@@ -255,12 +258,85 @@ def test_meta_ads_line_yes_links_the_ad_library_no_says_no(monkeypatch):
     from datetime import date
     from surven_outreach.day7 import build as day7
     today = date.today().isoformat()
-    recs = {"a": {"checked": today, "ads": "yes", "start": "2026-08-20", "page_id": "106212728072360"},
-            "b": {"checked": today, "ads": "no"},
-            "c": {"checked": today, "ads": "unsure", "search": "Maple Grove"}}
+    recs = {"a": {"v": 2, "checked": today, "ads": "yes", "start": "2026-08-20", "page_id": "106212728072360",
+                  "how": "Page linked on their website, ads link to gablesofojai.com"},
+            "b": {"v": 2, "checked": today, "ads": "no"},
+            "c": {"v": 2, "checked": today, "ads": "unsure", "search": "Maple Grove"},
+            "d": {"v": 2, "checked": today, "ads": "no", "page": "The Fite Living Centre", "page_id": "339574046120088",
+                  "how": "Page linked on their website"},
+            "e": {"v": 2, "checked": today, "ads": "no", "page": "Nazareth House", "page_id": "495271293666620", "how": ""}}
     monkeypatch.setattr(day7, "load", lambda: recs)
     yes = el.meta_line("a", {})
-    assert yes[0].startswith("Meta ads: yes, since mid August") and yes[1].endswith("view_all_page_id=106212728072360")
-    assert el.meta_line("b", {}) == ["Meta ads: no"]
+    assert yes[0].startswith("Meta ads: yes, since mid August")
+    assert yes[1] == "(how we know: Page linked on their website, ads link to gablesofojai.com)"
+    assert yes[2].endswith("view_all_page_id=106212728072360")
+    assert el.meta_line("b", {}) == ["Meta ads: none found (no Facebook Page found for them)"]
     unsure = el.meta_line("c", {})
     assert unsure[0].startswith("Meta ads: not sure") and "q=%22Maple%20Grove%22" in unsure[1]
+    assert el.meta_line("d", {}) == ["Meta ads: no", "(their Page, The Fite Living Centre, has 0 ads. How we know it's "
+                                                     "theirs: Page linked on their website)"]
+    assert el.meta_line("e", {})[0] == "Meta ads: none found"  # a same-name Page nothing ties to them is not theirs
+
+
+def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_falls_back_when_meta_fails(monkeypatch, tmp_path):
+    """10/26: the reply text re-checks Meta with the home's website (the day 7 check only had the name). If Meta does
+    not answer, the day 7 check is used."""
+    from datetime import date
+    from surven_outreach.day7 import adlib, build as day7
+    old = {"x": {"checked": date.today().isoformat(), "ads": "no", "page": "", "page_id": ""}}
+    saved, seen = {}, {}
+    monkeypatch.setattr(day7, "load", lambda: dict(old))
+    monkeypatch.setattr(day7, "save", lambda s: saved.update(s))
+    monkeypatch.setattr(el, "FACTS", tmp_path / "lead_facts.json")
+    (tmp_path / "queue.json").write_text(json.dumps([{"id": "x", "facility": "Fite Living Center", "home": "Fite Living Center"}]))
+    monkeypatch.setattr(day7.S, "start", lambda: type("S", (), {"adlib": lambda self: None})())
+
+    def check(al, name, city, state, website="", fb_links=()):
+        seen.update(website=website, fb=list(fb_links))
+        return {"running_ads": "no", "active_ads": 0, "page_name": "The Fite Living Centre", "page_id": "339574046120088",
+                "match": "their own Page", "how": "Page linked on their website"}
+    monkeypatch.setattr(adlib, "check_home", check)
+    lines = el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com", "facebook": ""})
+    assert seen == {"website": "https://www.fitelivingcentre.com", "fb": []}
+    assert lines[0] == "Meta ads: no" and saved["x"]["v"] == 2 and saved["x"]["page_id"] == "339574046120088"
+
+    def broken(*a, **k):
+        raise adlib.RateLimited("Meta rate limited")
+    monkeypatch.setattr(adlib, "check_home", broken)
+    assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [
+        "Meta ads: none found (no Facebook Page found for them)"]
+
+
+def test_a_website_in_their_signature_is_found_even_from_gmail(world):
+    """10/26: Fite Living Center wrote from Gmail; its site was only in the signature, and the text said "not found"."""
+    said = ("Please feel free to reach out to Jesse Rumsey for further details his number 404-932-9512.\nThank you,\n"
+            "Charissa Rumsey, *Executive Director*\n*www.fitelivingcentre.com <http://www.fitelivingcentre.com>*\n"
+            "*770-382-2002 office*")
+    assert el.sites_in_text(said) == ["https://www.fitelivingcentre.com"]
+    assert el.sites_in_text("email me at jo@fitelivingcentre.com or see facebook.com/x and surven.ai") == []
+    reply("tx-greens-haven-112104", "fitelivingcentre@gmail.com", "Fite Living Center", said, "Fite Living Centre")
+    ch.send_alert_texts()
+    assert "\nSite: fitelivingcentre.com\n(from their reply)\n" in world["sent"][0]
+
+
+def test_a_name_alone_does_not_tie_a_page_whose_ads_are_in_another_state_or_link_elsewhere():
+    """10/26: "City View La" (Los Angeles) matched the "City View" apartments Page in Lansing, MI by name alone."""
+    from surven_outreach.day7 import adlib
+    lansing = {"count": 1, "words": "Luxury apartment home at City View | https://www.cityviewlansing.com/ | "
+                                    "Luxury apartment property located at 110 W Hillsdale St Lansing, MI 48933"}
+    assert adlib._ties(lansing, "", "City View La", "Los Angeles", "CA", "") == []
+    assert adlib._ties(lansing, "", "City View La", "Los Angeles", "CA", "https://cityview.care") == []
+    ojai = {"count": 3, "words": "Gables of Ojai assisted living | https://gablesofojai.com/tour | GABLESOFOJAI.COM"}
+    assert adlib._ties(ojai, "city", "Gables Of Ojai", "Ojai", "CA", "https://gablesofojai.com", "their website") == [
+        "Page linked on their website", "Page says Ojai", "ads name Ojai", "ads link to gablesofojai.com"]
+
+
+def test_facebook_links_on_a_page():
+    from surven_outreach.day7 import adlib
+    html = ('<a href="https://www.facebook.com/TheFiteLivingCentre/">f</a>'
+            '<a href="https://www.facebook.com/sharer/sharer.php?u=x">s</a>'
+            '<a href="https://facebook.com/TheFiteLivingCentre">f2</a>'
+            '<script>"https:\\/\\/www.facebook.com\\/tr?id=1"</script>'
+            '<a href="https://www.facebook.com/profile.php?id=100064&amp;mibextid=x">p</a>')
+    assert adlib.facebook_links(html) == ["https://www.facebook.com/TheFiteLivingCentre",
+                                          "https://www.facebook.com/profile.php?id=100064"]

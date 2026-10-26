@@ -168,6 +168,89 @@ def ads_name_home(words: str, name: str, city: str) -> str:
     return "name" if len(compact) >= 8 and compact in w.replace(" ", "") else ""
 
 
+def site_domain(url: str) -> str:
+    """"https://www.fitelivingcentre.com/about" -> "fitelivingcentre.com"."""
+    host = re.sub(r"^[a-z]+://", "", (url or "").strip().lower()).split("/")[0].split("?")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def ads_link_site(words: str, website: str) -> bool:
+    """10/26: the Page's ads send people to the home's own website (the ad's link or the domain under its picture)."""
+    dom = site_domain(website)
+    return bool(dom) and dom in (words or "").lower()
+
+
+AD_LINK = re.compile(r"https?://(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})", re.I)
+
+
+def ad_sites(words: str) -> set[str]:
+    """The websites the Page's ads send people to (Facebook's own lead forms and Messenger left out)."""
+    return {d.lower() for d in AD_LINK.findall(words or "")
+            if not re.search(r"facebook|fb\.|instagram|messenger|wa\.me|whatsapp", d, re.I)}
+
+
+FB_LINK = re.compile(r"""(?:https?:)?(?:\\?/){2}(?:www\.|m\.|web\.)?facebook\.com(?:\\?/)[^"'\s<>|]+""", re.I)
+FB_SKIP = re.compile(r"facebook\.com/(?:sharer|share|plugins|dialog|tr\b|groups|events|watch|login|policies|help|"
+                     r"privacy|legal|business|ads|hashtag|photo|story\.php|permalink|l\.php|2008|v\d|search|marketplace|"
+                     r"reel|video)", re.I)
+
+
+def facebook_links(html: str) -> list[str]:
+    """Links to a Facebook Page in a web page or an email, most-linked first ("facebook.com/TheFiteLivingCentre")."""
+    out = []
+    for u in FB_LINK.findall(html or ""):
+        u = u.replace("\\/", "/").split("#")[0].split("&")[0]
+        u = re.sub(r"^(?:https?:)?//(?:m\.|web\.)?", "https://", u).replace("https://facebook.com", "https://www.facebook.com")
+        u = re.sub(r"[).,;:*]+$", "", u).rstrip("/")
+        if "?" in u and "profile.php?id=" not in u:
+            u = u.split("?")[0]
+        if not FB_SKIP.search(u) and u.count("/") >= 3 and u.split("/")[3]:
+            out.append(u)
+    return sorted(dict.fromkeys(out), key=lambda x: -out.count(x))
+
+
+def site_facebook(al: "AdLib", website: str) -> list[str]:
+    """The Facebook Page links on the home's own website, opened in the browser (JavaScript sites, 403s)."""
+    if not website:
+        return []
+    pg = al.ctx.new_page()
+    try:
+        pg.goto(website if "://" in website else "https://" + website, wait_until="domcontentloaded", timeout=30000)
+        pg.wait_for_timeout(2500)
+        return facebook_links(pg.content())
+    except Exception:
+        return []
+    finally:
+        pg.close()
+
+
+PAGE_ID = (r'"associated_page_id":"(\d+)"', r'"delegate_page_id":"(\d+)"', r'"pageID":"(\d+)"', r'fb://page/\?id=(\d+)',
+           r'fb://page/(\d+)', r'"page_id":"(\d+)"')
+
+
+def page_of_link(al: "AdLib", link: str) -> dict | None:
+    """The Ad Library id of the Page behind a facebook.com link, read from the public Page (no login):
+    {"page_id", "name"}. 10/26: a Page's own Ad Library id is its "associated_page_id"; the profile id in the same
+    page (fb://profile/...) opens an empty Ad Library view."""
+    pg = al.ctx.new_page()
+    try:
+        pg.goto(link, wait_until="domcontentloaded", timeout=40000)
+        for wait in (3000, 4000):  # a slow Page fills in its ids a few seconds after it opens
+            pg.wait_for_timeout(wait)
+            html, title = pg.content(), pg.title()
+            m = next((m for m in (re.search(pat, html) for pat in PAGE_ID) if m), None)
+            if m:
+                break
+    except Exception:
+        return None
+    finally:
+        pg.close()
+    if not m:
+        return None
+    name = re.split(r"\s+\|\s+", title or "")[0].strip()
+    return {"page_id": m.group(1), "name": "" if name.lower() in ("facebook", "log in or sign up") else name}
+
+
 def epoch_to_date(ts: int) -> dt.date:
     # Ad Library start dates are midnight US Pacific; shifting -7h lands on the right day
     # in both PDT and PST.
@@ -359,12 +442,56 @@ class AdLib:
                 "complete": (not count) or len(recs) >= count}
 
 
-def check_home(al: AdLib, name: str, city: str, state: str) -> dict:
+def _own_pages(al: AdLib, name: str, website: str, fb_links) -> list[dict]:
+    """10/26: the home's own Facebook Page, from a facebook.com link in their reply or on their website. Strongest
+    proof a Page is theirs, and it finds Pages the name search misses (Fite Living Center's Page is "The Fite Living
+    Centre"). Each one must open in the Ad Library as a real Page (it shows ads, an About line or its name)."""
+    links = [(u, "their reply") for u in fb_links or []] + [(u, "their website") for u in site_facebook(al, website)]
+    own, seen = [], set()
+    for link, via in links[:4]:
+        p = page_of_link(al, link)
+        if not p or p["page_id"] in seen:
+            continue
+        seen.add(p["page_id"])
+        view = al.page_view(p["page_id"])
+        body = norm(al.page.inner_text("body"))
+        words = [w for w in norm(p["name"]).split() if w not in GENERIC and len(w) > 2]
+        if view["count"] or view["about"] or (words and all(w in body.split() for w in words)):
+            own.append({**p, "via": via, "view": view, "name": p["name"] or name})
+        if len(own) >= 2:
+            break
+    return own
+
+
+def _ties(view: dict, verdict: str, name: str, city: str, st: str, website: str, via: str = "") -> list[str]:
+    """Why a Page counts as this home's, in words for Joey's text. Empty = nothing ties it to them."""
+    ties = [f"Page linked on {via}"] if via else []
+    if verdict == "city":
+        ties.append(f"Page says {city}")
+    words = view.get("words", "")
+    named = ads_name_home(words, name, city) if view.get("count") else ""
+    # 10/26: the name alone is not enough when the ads place the Page in another state, or send people to a
+    # website that is not the home's ("City View La" in Los Angeles vs "City View" apartments in Lansing, MI).
+    sites = ad_sites(words)
+    if named == "name" and (location_verdict(words, city, st) == "other"
+                            or (website and sites and not ads_link_site(words, website))):
+        named = ""
+    if named:
+        ties.append(f"ads name {city}" if named == "city" else "ads name the home")
+    if view.get("count") and ads_link_site(view.get("words", ""), website):
+        ties.append(f"ads link to {site_domain(website)}")
+    return ties
+
+
+def check_home(al: AdLib, name: str, city: str, state: str, website: str = "", fb_links=()) -> dict:
+    """website / fb_links (10/26): the home's own site and any Facebook link they wrote. Both are optional; with
+    them the check also opens the Page their site links to and counts ads that link to their site."""
     t0 = time.time()
     st = state_code(state)
     res = {"home": name, "city": city, "state": st, "running_ads": "", "active_ads": "",
            "earliest_start": "", "match": "", "page_name": "", "page_id": "",
-           "page_about": "", "keyword_hits": "", "rejected": "", "note": "", "ads_name_home": ""}
+           "page_about": "", "keyword_hits": "", "rejected": "", "note": "", "ads_name_home": "", "how": ""}
+    own = _own_pages(al, name, website, fb_links) if (website or fb_links) else []
     # Load an exact-phrase keyword search first: enables the search box, and its count is
     # a cross-check (ads from ANY advertiser whose text contains the home's name).
     kw_count, kw_pages = al.keyword_count(name)
@@ -388,10 +515,17 @@ def check_home(al: AdLib, name: str, city: str, state: str) -> dict:
         if any(c["score"] >= 0.8 for c in cands.values()):
             break
     ranked = sorted(cands.values(), key=lambda c: (-c["score"], -(c.get("likes") or 0)))
-    ranked = [c for c in ranked if c["score"] >= 0.55][:3]
+    own_ids = {o["page_id"] for o in own}
+    ranked = [c for c in ranked if c["score"] >= 0.55 and c["page_id"] not in own_ids][:3]
 
-    chosen, chosen_view, fallback, rejected = None, None, None, []
-    for c in ranked:
+    chosen, chosen_view, fallback, rejected, verdict = None, None, None, [], ""
+    for o in own:  # their own Page running ads settles it
+        if o["view"]["count"]:
+            chosen, chosen_view = o, o["view"]
+            verdict = location_verdict(o["name"] + " | " + o["view"]["about"], city, st)
+            res["match"] = f"their own Page (linked on {o['via']})"
+            break
+    for c in (ranked if not chosen else []):
         view = al.page_view(c["page_id"])
         verdict = location_verdict(c["name"] + " | " + view["about"], city, st)
         if verdict == "city" or (verdict == "state" and not city):
@@ -418,15 +552,26 @@ def check_home(al: AdLib, name: str, city: str, state: str) -> dict:
                    page_id=chosen["page_id"], page_about=chosen_view["about"][:120])
         if n and not chosen_view["complete"]:
             res["note"] = f"earliest date from {chosen_view['loaded']} of {n} ads loaded"
-        # 10/24: a Page found by name alone counts only when its own ads name the home's city or the home itself;
-        # otherwise it is "unsure" and the home gets the no-ads email (we never claim ads we cannot tie to them).
+        # 10/24: a Page found by name alone counts only when something ties it to the home: its About names the
+        # home's city, its ads name the city or the home, (10/26) its ads link to the home's website, or the home's
+        # own site or reply links the Page. Otherwise it is "unsure" and the home gets the no-ads email (we never
+        # claim ads we cannot tie to them).
         named = ads_name_home(chosen_view.get("words", ""), name, city) if n else ""
         res["ads_name_home"] = named
-        if n and not res["match"].startswith("Page name + city") and not named:
+        ties = _ties(chosen_view, verdict, name, city, st, website, chosen.get("via", ""))
+        res["how"] = ", ".join(ties)
+        if n and not ties:
             res["running_ads"] = "unsure"
     else:
         res.update(running_ads="unsure" if kw_count else "no", active_ads=kw_count,
                    match="no matching Page found; keyword count only (may include other advertisers)")
+    if own and res["running_ads"] != "yes":
+        # 10/26: their own Page is known and runs no ads, and no other Page with ads ties to them, so "no". A
+        # same-name Page with untied ads is someone else's.
+        o = own[0]
+        res.update(running_ads="no", active_ads=0, earliest_start="", page_name=o["name"], page_id=o["page_id"],
+                   page_about=o["view"]["about"][:120], note="", how=f"Page linked on {o['via']}",
+                   match=f"their own Page (linked on {o['via']}) has no active ads")
     if al.rate_limited:
         raise RateLimited("Meta rate limited the Ad Library during this check")
     res["secs"] = round(time.time() - t0, 1)
