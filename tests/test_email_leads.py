@@ -333,20 +333,32 @@ def test_the_text_says_which_email_they_answered(world):
                                        'Replied to: Day 3 email (2 of 4), sent Oct 28: "I just emailed you."\n"Yes we have 2"')
 
 
-def test_when_meta_could_not_be_checked_the_answer_follows_in_its_own_text(world):
-    """10/28, Joey: "We must always check." """
-    answers = [[el.META_LATER], [el.META_LATER], ["Meta ads: no", "(their Page, Greens Haven, has 0 ads. How we know "
-                                                                  "it's theirs: Page linked on their website)"]]
-    world["mp"].setattr(el, "meta_line", lambda pid, facts, lead=None: answers.pop(0))
+def test_when_meta_could_not_be_checked_joeys_pc_texts_the_answer(world):
+    """10/28, Joey: "We must always check." The cloud's text says Meta is still being checked; Joey's PC
+    (meta_followup.py) checks it where the Ad Library answers and texts the answer once."""
+    from datetime import datetime
+    from surven_outreach import meta_followup as mf
+    world["mp"].setattr(el, "meta_line", lambda pid, facts, lead=None: [el.META_LATER])
     reply("tx-greens-haven-112104", "sjdn39love@gmail.com", "Greens Haven", "Yes please", "Shannon Green")
-    ch.send_alert_texts()  # the text goes now, saying Meta is still being checked; the retry right after fails too
+    ch.send_alert_texts()
     assert el.META_LATER in world["sent"][0] and len(world["sent"]) == 1
-    assert world["tmp"].joinpath("inflight.jsonl").read_text() != ""  # kept until the Meta answer is texted
-    ch.send_alert_texts()  # next run: Meta answers
+    sent = [json.loads(l) for l in world["tmp"].joinpath("sent.jsonl").read_text().splitlines()]
+    assert sent[0]["meta_later"] is True  # finished in the cloud; the PC picks it up from here
+
+    answers = [[el.META_LATER], ["Meta ads: no", "(their Page, Greens Haven, has 0 ads. How we know it's theirs: "
+                                                  "Page linked on their website)"]]
+    world["mp"].setattr(el, "meta_line", lambda pid, facts, lead=None: answers.pop(0))
+    world["mp"].setattr(mf, "cloud_alerts", lambda: sent)
+    world["mp"].setattr(mf, "DONE", world["tmp"] / "meta_followups.json")
+    world["mp"].setattr(mf, "LOG", world["tmp"] / "meta_followup.log")
+    world["mp"].setattr(mf, "datetime", type("dt", (datetime,), {"now": classmethod(
+        lambda cls, tz=None: datetime.fromisoformat(sent[0]["at"]).replace(hour=12, tzinfo=tz))}))
+    mf.run()  # Meta did not answer on the PC either: nothing texted, tried again next time
+    assert len(world["sent"]) == 1
+    mf.run()
     assert world["sent"][1] == ("E1. Shannon G, Greens Haven\nMeta ads: no\n(their Page, Greens Haven, has 0 ads. How "
                                 "we know it's theirs: Page linked on their website)")
-    assert world["tmp"].joinpath("inflight.jsonl").read_text() == ""
-    ch.send_alert_texts()
+    mf.run()  # texted once
     assert len(world["sent"]) == 2
 
 

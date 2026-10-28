@@ -368,21 +368,10 @@ def send_alert_texts() -> None:
             ld = it["lead"]
             if _ghl_sms(f"{ld['code']}. {who}, {it.get('facility', '')} is ready. Reply \"{ld['code']}\" to call."):
                 it["texted_code"] = True
-        if not night and it.get("texted") and it.get("meta_later"):
-            # 10/28, Joey: "We must always check." Meta did not answer when the text went; every run tries again and
-            # the answer follows in its own text. After a day of tries it is logged and dropped.
-            lines = email_leads.meta_line(it["id"], email_leads._facts(it["id"]), it.get("lead"))
-            if lines != [email_leads.META_LATER]:
-                code = (it.get("lead") or {}).get("code", "")
-                if not lines or _ghl_sms("\n".join([f"{code + '. ' if code else ''}{who}, {it.get('facility', '')}"] + lines)):
-                    it["meta_later"] = False
-            else:
-                it["meta_tries"] = it.get("meta_tries", 0) + 1
-                if it["meta_tries"] >= 24:
-                    it["meta_later"] = False
-                    log(f"meta check {it['id']}: gave up after 24 runs")
-        finished = (it.get("texted") and (not lead_kind or (it.get("lead") and it.get("texted_code")))
-                    and not it.get("meta_later"))
+        # 10/28, Joey: "We must always check." When Meta did not answer here, the alert keeps "meta_later" and Joey's
+        # PC (meta_followup.py, where the Ad Library answers) checks it and texts the answer. Cloud retries were
+        # refused every time, so there are none.
+        finished = it.get("texted") and (not lead_kind or (it.get("lead") and it.get("texted_code")))
         (done if finished else keep).append(it)
     if done:
         with open(ALERTS_SENT, "a", encoding="utf-8") as f:
