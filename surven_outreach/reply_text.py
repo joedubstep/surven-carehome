@@ -77,8 +77,11 @@ def sender_name(m) -> str:
 
 # An opt-out is a first word of no / stop / unsubscribe / remove (not "no longer", "no problem"), or one of the
 # plain opt-out phrases anywhere in what they wrote.
-_OPT_PHRASES = re.compile(r"\b(unsubscribe|not interested|remove me|take me off|stop emailing|stop contacting)\b", re.I)
-_OPT_FIRST = re.compile(r"^(no|stop|unsubscribe|remove)\b(?!\s+(longer|problem|worries)\b)", re.I)
+# 10/28: "Please remove us from your email list, OK?" (Gardenias) was missed, so "us", "please" and list wording count.
+_OPT_PHRASES = re.compile(r"\b(unsubscribe|not interested|remove (me|us)|take (me|us) off|(off|from) (your|the) "
+                          r"(e-?mail(ing)?|mailing|contact) list|stop (e-?mailing|emailing|contacting|sending)|"
+                          r"(do not|don'?t) (e-?mail|contact)|no more e-?mails?)\b", re.I)
+_OPT_FIRST = re.compile(r"^(please\s+)?(no|stop|unsubscribe|remove)\b(?!\s+(longer|problem|worries)\b)", re.I)
 
 
 def is_opt_out(text: str) -> bool:

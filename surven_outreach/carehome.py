@@ -423,6 +423,17 @@ def _to_inbox(c, uid):
         return repr(ex)[:200]
 
 
+def fix_missed_opt_outs(con) -> None:
+    """10/28: a reply saved as 'replied' that the opt-out check now catches (Gardenias: "Please remove us from your
+    email list") becomes 'opted_out', so it counts as one in the sheet and the stats."""
+    for r in con.execute("SELECT id, stopped_reason FROM prospects WHERE status='replied'").fetchall():
+        said = (r["stopped_reason"] or "").removeprefix("reply in inbox: ")
+        if is_opt_out(said):
+            con.execute("UPDATE prospects SET status='opted_out' WHERE id=?", (r["id"],))
+            log(f"{r['id']}: was an opt-out, now opted_out")
+    con.commit()
+
+
 def scan_replies(con, cfg) -> None:
     """9/29 incremental scan: reads only inbox mail that arrived since the last run (by IMAP UID) and matches it to a
     thread by In-Reply-To/References, then exact address, then the business domain when only one live thread uses it.
@@ -805,6 +816,7 @@ def cmd_run(con, dry: bool) -> None:
     cfg = load_config()
     queue = load_queue()
     if not dry:
+        fix_missed_opt_outs(con)
         scan_replies(con, cfg)
         try:
             send_alert_texts()

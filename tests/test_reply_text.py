@@ -49,7 +49,9 @@ def test_sender_name_is_who_wrote():
 
 
 def test_opt_outs():
-    for t in ["No thanks", "Stop", "unsubscribe", "Please remove me from your list", "we are not interested", "STOP emailing me"]:
+    for t in ["No thanks", "Stop", "unsubscribe", "Please remove me from your list", "we are not interested", "STOP emailing me",
+              "Please remove us from your email list, OK?", "Take us off your mailing list", "Please stop sending these",
+              "Do not email this address again", "Please no"]:
         assert is_opt_out(t), t
     for t in ["No longer with the company", "No problem, call me", "Hello\nLuceli is no longer here", "Can we talk at 3?",
               "I stopped by your site"]:
@@ -72,3 +74,17 @@ def test_long_reply_is_cut_at_a_word_and_fits_one_text(tmp_path, monkeypatch):
     carehome.queue_alert(r, "replied", "word " * 400, "Ann", "a@b.com")
     msg = json.loads((tmp_path / "alerts.jsonl").read_text())["msg"]
     assert len(msg) < 1500 and msg.count("...") == 1
+
+
+def test_a_missed_opt_out_is_fixed_on_the_next_run():
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(carehome.SCHEMA)
+    for pid, why in [("gardenias", "reply in inbox: Please remove us from your email list, OK?"),
+                     ("lodge", "reply in inbox: I have availability, are you looking for Memory Care?")]:
+        con.execute("INSERT INTO prospects (id,email,facility,status,stopped_reason) VALUES (?,?,?,?,?)",
+                    (pid, f"{pid}@x.com", pid, "replied", why))
+    carehome.fix_missed_opt_outs(con)
+    assert {r["id"]: r["status"] for r in con.execute("SELECT * FROM prospects")} == {"gardenias": "opted_out",
+                                                                                       "lodge": "replied"}
