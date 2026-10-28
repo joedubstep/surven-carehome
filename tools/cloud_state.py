@@ -21,7 +21,7 @@ CLOUD_OWNED = ["carehome.db", "day7.json", "email_verify.json", "email_enrich.js
                "alerts_sent.jsonl", "warmup.json", "run.log", "task.log", "stats.log", "stats_task.log", "stats_notion_map.json",
                "build/notion_map.json"]
 LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.json", "lead_facts.json", "build/prospects.json",
-               "build/notion_sync.py"]
+               "build/notion_sync.py", "day7_pc.json"]  # day7_pc.json: the PC's Ad Library checks (10/28, meta_followup.py)
 LOGS = {"run.log", "task.log", "stats.log", "stats_task.log"}
 
 

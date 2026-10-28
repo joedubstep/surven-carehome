@@ -212,3 +212,64 @@ def test_first_email_waits_for_a_checked_mailbox(monkeypatch):
     monkeypatch.setattr(ch, "mail_verdicts", lambda: {"ok@x.com": {"status": "valid"}, "bad@x.com": {"status": "invalid"}})
     q = {k: V3 for k in ("ok", "bad", "unchecked")}
     assert due(con, q) == {("ok", 1)}
+
+
+def test_cloud_reads_the_day7_checks_from_joeys_pc(monkeypatch, tmp_path):
+    """10/28: Meta refuses the Ad Library to GitHub's machines, so Joey's PC checks the day 7 homes. Its file sits next
+    to the cloud's; the newer check wins, and the PC's file keeps only what the cloud does not already have."""
+    import json
+    from surven_outreach.day7 import build as day7
+    monkeypatch.setattr(day7, "STATE", tmp_path / "day7.json")
+    monkeypatch.setattr(day7, "PC_STATE", tmp_path / "day7_pc.json")
+    day7.STATE.write_text(json.dumps({"a": {"checked": "2026-10-27", "ads": "no"}, "b": {"checked": "2026-10-28"}}))
+    day7.PC_STATE.write_text(json.dumps({"a": {"checked": "2026-10-29", "ads": "yes"}, "c": {"checked": "2026-10-29"}}))
+    s = day7.load()
+    assert s["a"]["ads"] == "yes" and set(s) == {"a", "b", "c"}
+    monkeypatch.setattr(day7, "OUT", day7.PC_STATE)
+    s["d"] = {"checked": "2026-10-29"}
+    day7.save(s)
+    assert set(json.loads(day7.PC_STATE.read_text())) == {"a", "c", "d"}
+
+
+def test_joeys_pc_checks_homes_due_within_two_days_and_pushes_them(monkeypatch, tmp_path):
+    import json
+    from datetime import date, timedelta
+    from surven_outreach import meta_followup as mf
+    from surven_outreach.day7 import build as day7
+    from surven_outreach.day7.adlib import RateLimited
+    today = date.today()
+    path = tmp_path / "cloud.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.executescript(ch.SCHEMA)
+    con.execute("ALTER TABLE prospects ADD COLUMN sender TEXT")
+    first = lambda n: (today - timedelta(days=n)).isoformat()
+    home(con, "due", 2, first(4), first(2))  # day 7 in 2 days
+    home(con, "later", 2, first(3), first(1))  # day 7 in 3 days
+    home(con, "done", 2, first(4), first(2))  # the cloud already checked it
+    con.commit()
+    con.close()
+    files = {"carehome.db": path.read_bytes(),
+             "day7.json": json.dumps({"done": {"checked": today.isoformat()}}).encode()}
+    monkeypatch.setattr(mf, "fetch", lambda: None)
+    monkeypatch.setattr(mf, "state_file", lambda name: files[name])
+    monkeypatch.setattr(mf, "LOG", tmp_path / "log")
+    monkeypatch.setattr(mf.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ch, "load_queue", lambda: {"due": V3, "later": V3, "done": V3})
+    monkeypatch.setattr(day7, "STATE", tmp_path / "day7.json")
+    monkeypatch.setattr(day7, "PC_STATE", tmp_path / "day7_pc.json")
+    pushes, checked = [], []
+    monkeypatch.setattr(mf, "push", lambda: pushes.append(1))
+
+    def limited(r, p):
+        raise RateLimited("Rate limit exceeded")
+    monkeypatch.setattr(day7, "prep", limited)
+    mf.day7_checks()  # Meta refused this PC too: nothing saved, nothing pushed, tried again next run
+    assert pushes == []
+
+    def prep(r, p):
+        checked.append(r["id"])
+        return {"checked": today.isoformat(), "ads": "no"}
+    monkeypatch.setattr(day7, "prep", prep)
+    mf.day7_checks()
+    assert checked == ["due"] and pushes == [1]

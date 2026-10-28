@@ -35,15 +35,33 @@ TITLE_NAMES = {"lvn", "rn", "lpn", "cna", "bsn", "msn", "np", "md", "dr", "mr", 
 _cache: dict = {}
 
 
-def load() -> dict:
+# 10/28: Meta refuses the Ad Library to GitHub's machines, so Joey's PC does the checks (meta_followup.py) and keeps
+# them in its own file, pushed to the state branch. The cloud reads both; the newer check wins.
+PC_STATE = D / "day7_pc.json"
+OUT = STATE  # Joey's PC sets this to PC_STATE
+
+
+def _read(p: Path) -> dict:
     try:
-        return json.loads(STATE.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
+def load() -> dict:
+    s = _read(STATE)
+    for k, v in _read(PC_STATE).items():
+        if v.get("checked", "") >= (s.get(k) or {}).get("checked", ""):
+            s[k] = v
+    return s
+
+
 def save(s: dict) -> None:
-    STATE.write_text(json.dumps(s, indent=1), encoding="utf-8")
+    if OUT == STATE:
+        STATE.write_text(json.dumps(s, indent=1), encoding="utf-8")
+        return
+    cloud = _read(STATE)  # the PC file keeps only what the cloud's file does not already have
+    OUT.write_text(json.dumps({k: v for k, v in s.items() if cloud.get(k) != v}, indent=1), encoding="utf-8")
 
 
 def _facts(pid: str) -> dict:
@@ -183,7 +201,11 @@ def prep(r, p: dict, today: date | None = None) -> dict:
     al = S.start().adlib()
     if al.rate_limited:  # stays limited for this run; the email waits for a run Meta answers
         raise RateLimited("Ad Library rate limited earlier in this run")
-    res = check_home(al, search, city, st)
+    try:  # 10/28: their website lets check_home open the Facebook Page the site links to (same check as reply texts)
+        res = check_home(al, search, city, st, website=f.get("website", ""))
+    except RateLimited:
+        al.rate_limited = True  # every later home in this run would be refused the same way
+        raise
     rec = {"checked": (today or date.today()).isoformat(), "ads": res.get("running_ads", ""),
            "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
            "page": res.get("page_name", ""), "page_id": res.get("page_id", ""), "match": res.get("match", "")}
