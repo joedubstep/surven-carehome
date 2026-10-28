@@ -337,11 +337,11 @@ META_LATER = "Meta ads: still checking, I'll text it"
 
 def check_meta(pid: str, facts: dict, ld: dict) -> dict | None:
     """A fresh Ad Library check for one home (day7/adlib.py check_home with their website and Facebook link), saved
-    to day7.json for day 7 too. None when the home is not in the queue. Raises when Meta could not be checked. A
-    blocked or failed first try gets a second one in a new, stealthier browser (10/28)."""
+    to day7.json for day 7 too. None when the home is not in the queue. Raises when Meta could not be checked
+    (meta_line then says "still checking" and the next run, on a new machine, tries again)."""
     from datetime import date
     from .day7 import build as day7
-    from .day7.adlib import AdLib, check_home
+    from .day7.adlib import check_home
     queue = {x["id"]: x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8"))}
     p = queue.get(pid)
     if not p:
@@ -350,15 +350,7 @@ def check_meta(pid: str, facts: dict, ld: dict) -> dict | None:
     name = home if home != "your home" else day7._clean_license(facts.get("facility") or p.get("facility", ""))
     args = (name, facts.get("city", ""), facts.get("state", ""))
     kw = {"website": ld.get("website", ""), "fb_links": [ld["facebook"]] if ld.get("facebook") else []}
-    try:
-        res = check_home(day7.S.start().adlib(), *args, **kw)
-    except Exception as ex:
-        print(f"meta check {pid}: first try failed: {ex!r}"[:400], flush=True)
-        al = AdLib(day7.S.start().pw, stealth=True)
-        try:
-            res = check_home(al, *args, **kw)
-        finally:
-            al.close()
+    res = check_home(day7.S.start().adlib(), *args, **kw)
     rec = {"v": 2, "checked": date.today().isoformat(), "ads": res.get("running_ads", ""),
            "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
            "page": res.get("page_name", ""), "page_id": res.get("page_id", ""),

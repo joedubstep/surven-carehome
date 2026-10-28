@@ -280,7 +280,7 @@ def test_meta_ads_line_yes_links_the_ad_library_no_says_no(monkeypatch):
 
 def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_says_still_checking_when_meta_fails(monkeypatch, tmp_path):
     """10/26: the reply text re-checks Meta with the home's website (the day 7 check only had the name). 10/28: if
-    Meta does not answer, a second try runs in a stealth browser, then the line says it is still checking."""
+    Meta does not answer, the line says it is still checking (the next run tries again)."""
     from datetime import date
     from surven_outreach.day7 import adlib, build as day7
     old = {"x": {"checked": date.today().isoformat(), "ads": "no", "page": "", "page_id": ""}}
@@ -290,12 +290,6 @@ def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_says_still_check
     monkeypatch.setattr(el, "FACTS", tmp_path / "lead_facts.json")
     (tmp_path / "queue.json").write_text(json.dumps([{"id": "x", "facility": "Fite Living Center", "home": "Fite Living Center"}]))
     monkeypatch.setattr(day7.S, "start", lambda: type("S", (), {"adlib": lambda self: None, "pw": None})())
-    stealth = []
-
-    def fake_adlib(pw, stealth_mode=False, **k):
-        stealth.append(k.get("stealth", stealth_mode))
-        return type("A", (), {"close": lambda self: None})()
-    monkeypatch.setattr(adlib, "AdLib", fake_adlib)
 
     def check(al, name, city, state, website="", fb_links=()):
         seen.update(website=website, fb=list(fb_links))
@@ -310,7 +304,6 @@ def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_says_still_check
         raise adlib.RateLimited("Meta rate limited")
     monkeypatch.setattr(adlib, "check_home", broken)
     assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [el.META_LATER]
-    assert stealth == [True]
 
 
 def test_the_text_says_which_email_they_answered(world):

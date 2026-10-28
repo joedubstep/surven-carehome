@@ -293,6 +293,9 @@ class AdLib:
         self.filter_pages: list[dict] = []  # advertisers behind the current search's results
         self.blobs: list[str] = []
         self.rate_limited = False  # 10/24: Meta answered "Rate limit exceeded"; nothing it says now can be trusted
+        # 10/28: only the search-box suggestions were refused (GitHub's cloud machines get this often). Page views
+        # and keyword searches still answer, so a home whose own Page is known can still be checked.
+        self.typeahead_limited = False
         self.page.on("response", self._on_response)
 
     def close(self):
@@ -307,7 +310,10 @@ class AdLib:
         except Exception:
             return
         if "1675004" in body or "Rate limit exceeded" in body:
-            self.rate_limited = True
+            if "TypeaheadSuggestion" in pd:
+                self.typeahead_limited = True
+            else:
+                self.rate_limited = True
             return
         if "TypeaheadSuggestion" in pd:
             m = re.search(r"(?:^|&)variables=([^&]*)", pd)
@@ -367,7 +373,8 @@ class AdLib:
         box.fill(query[:-1])
         box.type(query[-1:], delay=25)
         deadline = time.time() + 8
-        while time.time() < deadline and query not in self.typeahead and not self.rate_limited:
+        while (time.time() < deadline and query not in self.typeahead and not self.rate_limited
+               and not self.typeahead_limited):
             self.page.wait_for_timeout(250)
         if self.rate_limited:
             raise RateLimited("Meta rate limited the Ad Library search")
@@ -491,6 +498,7 @@ def check_home(al: AdLib, name: str, city: str, state: str, website: str = "", f
     res = {"home": name, "city": city, "state": st, "running_ads": "", "active_ads": "",
            "earliest_start": "", "match": "", "page_name": "", "page_id": "",
            "page_about": "", "keyword_hits": "", "rejected": "", "note": "", "ads_name_home": "", "how": ""}
+    al.typeahead_limited = False
     own = _own_pages(al, name, website, fb_links) if (website or fb_links) else []
     # Load an exact-phrase keyword search first: enables the search box, and its count is
     # a cross-check (ads from ANY advertiser whose text contains the home's name).
@@ -504,6 +512,8 @@ def check_home(al: AdLib, name: str, city: str, state: str, website: str = "", f
                            "likes": 0, "score": name_score(name, p["display_name"])}
     # Source 2: the Page suggestions Meta shows while typing in the search box.
     for q in query_variants(name, city):
+        if al.typeahead_limited:  # refused once: the other names would be refused too
+            break
         for p in al.suggest_pages(q):
             if p.get("page_is_deleted"):
                 continue
@@ -574,6 +584,9 @@ def check_home(al: AdLib, name: str, city: str, state: str, website: str = "", f
                    match=f"their own Page (linked on {o['via']}) has no active ads")
     if al.rate_limited:
         raise RateLimited("Meta rate limited the Ad Library during this check")
+    if al.typeahead_limited and not own and res["running_ads"] != "yes":
+        # Without the search box only Pages whose ads say the home's name were seen, so a "no" is not proven.
+        raise RateLimited("Meta rate limited the Ad Library search box, and their own Page is not known")
     res["secs"] = round(time.time() - t0, 1)
     return res
 
