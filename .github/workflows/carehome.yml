@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "run | dry | stats | status | seed | day7 | verify | calibrate | photo-check | port-check"
+        description: "run | dry | stats | status | seed | day7 | verify | calibrate | photo-check | port-check | meta-check"
         default: run
       to:
         description: "seed only: test inboxes, space separated"
@@ -111,6 +111,9 @@ jobs:
               except Exception as e:
                   print(h, "blocked", type(e).__name__)
           EOF
+      - name: Meta check (the reply text's Ad Library check on the last 3 replies, full errors, saves nothing)
+        if: steps.pick.outputs.task == 'meta-check'
+        run: python -m surven_outreach.email_leads meta-check 3
       - name: Day 7 photo check (10 homes, counts only, saves nothing)
         if: steps.pick.outputs.task == 'photo-check'
         run: python -m surven_outreach.carehome day7-photo-check
@@ -124,5 +127,5 @@ jobs:
         if: steps.pick.outputs.task == 'status'
         run: python -m surven_outreach.carehome status | tail -n 40
       - name: Save state
-        if: always() && steps.pick.outputs.task != 'dry' && steps.pick.outputs.task != 'seed' && steps.pick.outputs.task != 'photo-check' && steps.pick.outputs.task != 'port-check'
+        if: always() && steps.pick.outputs.task != 'dry' && steps.pick.outputs.task != 'seed' && steps.pick.outputs.task != 'photo-check' && steps.pick.outputs.task != 'port-check' && steps.pick.outputs.task != 'meta-check'
         run: python tools/cloud_state.py save-cloud

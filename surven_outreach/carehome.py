@@ -246,7 +246,29 @@ ALERTS_INFLIGHT = LOG.parent / "alerts_inflight.jsonl"
 ALERTS_SENT = LOG.parent / "alerts_sent.jsonl"
 
 
-def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str = "", again: bool = False) -> None:
+def replied_to(con, pid: str, refs: list, when=None) -> dict:
+    """Which of our emails they answered (10/28, Joey: "what email they are replying to, like what stage they are
+    in"): the one their In-Reply-To or References header names, else the last one sent before their reply.
+    -> {"step", "sent" (date), "line" (its first line, without the "Hi Name,")} or {}."""
+    rows = con.execute("SELECT step, message_id, sent_at, body FROM sends WHERE prospect_id=? ORDER BY step",
+                       (pid,)).fetchall()
+    ids = {(r[1] or "").strip("<> ").lower(): r for r in rows}
+    hit = next((ids[x.lower()] for x in refs or [] if x.lower() in ids), None)
+    if not hit and rows:
+        before = [r for r in rows if when is None or datetime.fromisoformat(r[2]) <= when]
+        hit = (before or rows)[-1]
+    if not hit:
+        return {}
+    import re
+    text = re.sub(r"<[^>]+>", " ", hit[3] or "")
+    line = next((l.strip() for l in text.splitlines() if l.strip()), "")
+    line = re.sub(r"^(?:hi|hey|hello)\b(?:\s+[A-Z][\w'.-]*)?,?\s*", "", line, flags=re.I)
+    line = line[:1].upper() + line[1:]
+    return {"step": hit[0], "sent": hit[2][:10], "line": line[:80].rsplit(" ", 1)[0] + "..." if len(line) > 80 else line}
+
+
+def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str = "", again: bool = False,
+                to: dict | None = None) -> None:
     """The whole reply goes to Joey (reply_text.py says why), with who really wrote it. When someone other than the
     person we emailed answers (a coworker, a new manager), the alert names both. 10/6: a reply also carries the facts
     email_leads.py needs to make the replier an E code lead, and the text is built when it goes out."""
@@ -262,7 +284,7 @@ def queue_alert(r, status: str, said: str, from_name: str = "", from_addr: str =
            else f"Cold email reply: {who} at {r['facility']} wrote:\n\"{said}\"\nCall them now.")
     rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": r["id"], "email": r["email"], "msg": msg[:1400],
            "status": status, "said": said, "from_name": from_name, "from_email": from_addr or r["email"],
-           "first_name": r["first_name"] or "", "facility": r["facility"], "again": again}
+           "first_name": r["first_name"] or "", "facility": r["facility"], "again": again, "replied_to": to or {}}
     with open(ALERTS_PENDING, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -340,12 +362,27 @@ def send_alert_texts() -> None:
             msg = email_leads.alert_text(it, it.get("lead")) if lead_kind else it["msg"]
             if _ghl_sms(msg):
                 it["texted"], it["texted_code"] = True, bool(it.get("lead"))
+                it["meta_later"] = lead_kind and email_leads.META_LATER in msg
+        who = email_leads.short_name(it.get("from_name", ""), it.get("first_name") or "Owner")
         if not night and it.get("texted") and it.get("lead") and not it.get("texted_code"):
             ld = it["lead"]
-            who = email_leads.short_name(it.get("from_name", ""), it.get("first_name") or "Owner")
             if _ghl_sms(f"{ld['code']}. {who}, {it.get('facility', '')} is ready. Reply \"{ld['code']}\" to call."):
                 it["texted_code"] = True
-        finished = it.get("texted") and (not lead_kind or (it.get("lead") and it.get("texted_code")))
+        if not night and it.get("texted") and it.get("meta_later"):
+            # 10/28, Joey: "We must always check." Meta did not answer when the text went; every run tries again and
+            # the answer follows in its own text. After a day of tries it is logged and dropped.
+            lines = email_leads.meta_line(it["id"], email_leads._facts(it["id"]), it.get("lead"))
+            if lines != [email_leads.META_LATER]:
+                code = (it.get("lead") or {}).get("code", "")
+                if not lines or _ghl_sms("\n".join([f"{code + '. ' if code else ''}{who}, {it.get('facility', '')}"] + lines)):
+                    it["meta_later"] = False
+            else:
+                it["meta_tries"] = it.get("meta_tries", 0) + 1
+                if it["meta_tries"] >= 24:
+                    it["meta_later"] = False
+                    log(f"meta check {it['id']}: gave up after 24 runs")
+        finished = (it.get("texted") and (not lead_kind or (it.get("lead") and it.get("texted_code")))
+                    and not it.get("meta_later"))
         (done if finished else keep).append(it)
     if done:
         with open(ALERTS_SENT, "a", encoding="utf-8") as f:
@@ -501,14 +538,14 @@ def _scan_box(c, box, state, con, cfg, rows, first, by_mid, by_email, by_dom, le
                 seen.append(mid)
                 del seen[:-500]
                 if r["status"] == "replied" and status == "replied":  # 10/6: they wrote again; Joey hears it, same E code
-                    queue_alert(r, status, said, sender_name(full), sender, again=True)
+                    queue_alert(r, status, said, sender_name(full), sender, again=True, to=replied_to(con, pid, refs, when))
                     log(f"{pid}: replied again")
                     continue
                 stop(con, pid, status, f"reply in inbox: {said[:300]}")
                 log(f"stop {pid}: {status}")
                 stopped += 1
                 notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
-                queue_alert(r, status, said, sender_name(full), sender)
+                queue_alert(r, status, said, sender_name(full), sender, to=replied_to(con, pid, refs, when))
                 rows[pid] = con.execute("SELECT * FROM prospects WHERE id=?", (pid,)).fetchone()
             except Exception as ex:  # one bad message must not block the rest
                 log(f"scan error uid {uid}: {ex!r}")
@@ -609,7 +646,15 @@ def scan_replies_full(con, cfg) -> None:
                 log(f"stop {r['id']}: {status}")
                 # alert Joey on every human reply, opt-outs included, so nothing sits unread
                 notify_reply(cfg, r["facility"], r["first_name"], "(opt-out)" if status == "opted_out" else "")
-                queue_alert(r, status, said, sender_name(human[-1]), parseaddr(human[-1].get("From", ""))[1])
+                m = human[-1]
+                import re
+                refs = re.findall(r"<([^>]+)>", (m.get("In-Reply-To", "") or "") + " " + (m.get("References", "") or ""))
+                try:
+                    when = email.utils.parsedate_to_datetime(m.get("Date", ""))
+                except Exception:
+                    when = None
+                queue_alert(r, status, said, sender_name(m), parseaddr(m.get("From", ""))[1],
+                            to=replied_to(con, r["id"], refs, when))
             except Exception as ex:  # one bad lookup must not block the rest
                 log(f"scan error {r['id']}: {ex!r}")
     finally:

@@ -278,9 +278,9 @@ def test_meta_ads_line_yes_links_the_ad_library_no_says_no(monkeypatch):
     assert el.meta_line("e", {})[0] == "Meta ads: none found"  # a same-name Page nothing ties to them is not theirs
 
 
-def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_falls_back_when_meta_fails(monkeypatch, tmp_path):
-    """10/26: the reply text re-checks Meta with the home's website (the day 7 check only had the name). If Meta does
-    not answer, the day 7 check is used."""
+def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_says_still_checking_when_meta_fails(monkeypatch, tmp_path):
+    """10/26: the reply text re-checks Meta with the home's website (the day 7 check only had the name). 10/28: if
+    Meta does not answer, a second try runs in a stealth browser, then the line says it is still checking."""
     from datetime import date
     from surven_outreach.day7 import adlib, build as day7
     old = {"x": {"checked": date.today().isoformat(), "ads": "no", "page": "", "page_id": ""}}
@@ -289,7 +289,13 @@ def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_falls_back_when_
     monkeypatch.setattr(day7, "save", lambda s: saved.update(s))
     monkeypatch.setattr(el, "FACTS", tmp_path / "lead_facts.json")
     (tmp_path / "queue.json").write_text(json.dumps([{"id": "x", "facility": "Fite Living Center", "home": "Fite Living Center"}]))
-    monkeypatch.setattr(day7.S, "start", lambda: type("S", (), {"adlib": lambda self: None})())
+    monkeypatch.setattr(day7.S, "start", lambda: type("S", (), {"adlib": lambda self: None, "pw": None})())
+    stealth = []
+
+    def fake_adlib(pw, stealth_mode=False, **k):
+        stealth.append(k.get("stealth", stealth_mode))
+        return type("A", (), {"close": lambda self: None})()
+    monkeypatch.setattr(adlib, "AdLib", fake_adlib)
 
     def check(al, name, city, state, website="", fb_links=()):
         seen.update(website=website, fb=list(fb_links))
@@ -303,8 +309,52 @@ def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_falls_back_when_
     def broken(*a, **k):
         raise adlib.RateLimited("Meta rate limited")
     monkeypatch.setattr(adlib, "check_home", broken)
-    assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [
-        "Meta ads: none found (no Facebook Page found for them)"]
+    assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [el.META_LATER]
+    assert stealth == [True]
+
+
+def test_the_text_says_which_email_they_answered(world):
+    """10/28, Joey: "I need to see what email they are replying to, like what stage they are in." """
+    import sqlite3
+    from datetime import datetime
+    con = sqlite3.connect(":memory:")
+    con.executescript(ch.SCHEMA)
+    for step, mid, at, body in [(1, "<a1@surven.ai>", "2026-10-26T09:41:33-04:00",
+                                 "Hi Melissa, how many rooms are open at The Lodge right now?\n\nJoey"),
+                                (2, "<a2@surven.ai>", "2026-10-28T08:47:43-04:00", "Hey, I just emailed you.\n\nJoey")]:
+        con.execute("INSERT INTO sends (prospect_id, step, email, subject, body, message_id, sent_at) VALUES (?,?,?,?,?,?,?)",
+                    ("tx-greens-haven-112104", step, "m@x.com", "s", body, mid, at))
+    when = datetime.fromisoformat("2026-10-28T09:50:00-04:00")
+    assert ch.replied_to(con, "tx-greens-haven-112104", ["a2@surven.ai", "a1@surven.ai"], when) == {
+        "step": 2, "sent": "2026-10-28", "line": "I just emailed you."}
+    # they hit reply on the first email after the second one went out: the first is the one they answered
+    assert ch.replied_to(con, "tx-greens-haven-112104", ["a1@surven.ai"], when)["line"] == (
+        "How many rooms are open at The Lodge right now?")
+    assert ch.replied_to(con, "tx-greens-haven-112104", [], datetime.fromisoformat("2026-10-27T10:00:00-04:00"))["step"] == 1
+    world["tmp"].joinpath("queue.json").write_text(json.dumps([{"id": "tx-greens-haven-112104", "seq": "v3"}]))
+    r = {"id": "tx-greens-haven-112104", "email": "sjdn39love@gmail.com", "facility": "Greens Haven", "first_name": "Lvn"}
+    ch.queue_alert(r, "replied", "Yes we have 2", "Shannon Green", "sjdn39love@gmail.com",
+                   to=ch.replied_to(con, r["id"], ["a2@surven.ai"], when))
+    ch.send_alert_texts()
+    assert world["sent"][0].startswith('Email reply: E1. Shannon G, Greens Haven\n'
+                                       'Replied to: Day 3 email (2 of 4), sent Oct 28: "I just emailed you."\n"Yes we have 2"')
+
+
+def test_when_meta_could_not_be_checked_the_answer_follows_in_its_own_text(world):
+    """10/28, Joey: "We must always check." """
+    answers = [[el.META_LATER], [el.META_LATER], ["Meta ads: no", "(their Page, Greens Haven, has 0 ads. How we know "
+                                                                  "it's theirs: Page linked on their website)"]]
+    world["mp"].setattr(el, "meta_line", lambda pid, facts, lead=None: answers.pop(0))
+    reply("tx-greens-haven-112104", "sjdn39love@gmail.com", "Greens Haven", "Yes please", "Shannon Green")
+    ch.send_alert_texts()  # the text goes now, saying Meta is still being checked; the retry right after fails too
+    assert el.META_LATER in world["sent"][0] and len(world["sent"]) == 1
+    assert world["tmp"].joinpath("inflight.jsonl").read_text() != ""  # kept until the Meta answer is texted
+    ch.send_alert_texts()  # next run: Meta answers
+    assert world["sent"][1] == ("E1. Shannon G, Greens Haven\nMeta ads: no\n(their Page, Greens Haven, has 0 ads. How "
+                                "we know it's theirs: Page linked on their website)")
+    assert world["tmp"].joinpath("inflight.jsonl").read_text() == ""
+    ch.send_alert_texts()
+    assert len(world["sent"]) == 2
 
 
 def test_a_website_in_their_signature_is_found_even_from_gmail(world):

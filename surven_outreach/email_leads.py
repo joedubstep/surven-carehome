@@ -332,49 +332,62 @@ def community_lines(f: dict) -> list:
 
 
 LIBRARY = "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US"
+META_LATER = "Meta ads: still checking, I'll text it"
+
+
+def check_meta(pid: str, facts: dict, ld: dict) -> dict | None:
+    """A fresh Ad Library check for one home (day7/adlib.py check_home with their website and Facebook link), saved
+    to day7.json for day 7 too. None when the home is not in the queue. Raises when Meta could not be checked. A
+    blocked or failed first try gets a second one in a new, stealthier browser (10/28)."""
+    from datetime import date
+    from .day7 import build as day7
+    from .day7.adlib import AdLib, check_home
+    queue = {x["id"]: x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8"))}
+    p = queue.get(pid)
+    if not p:
+        return None
+    home = day7.home_name(p)
+    name = home if home != "your home" else day7._clean_license(facts.get("facility") or p.get("facility", ""))
+    args = (name, facts.get("city", ""), facts.get("state", ""))
+    kw = {"website": ld.get("website", ""), "fb_links": [ld["facebook"]] if ld.get("facebook") else []}
+    try:
+        res = check_home(day7.S.start().adlib(), *args, **kw)
+    except Exception as ex:
+        print(f"meta check {pid}: first try failed: {ex!r}"[:400], flush=True)
+        al = AdLib(day7.S.start().pw, stealth=True)
+        try:
+            res = check_home(al, *args, **kw)
+        finally:
+            al.close()
+    rec = {"v": 2, "checked": date.today().isoformat(), "ads": res.get("running_ads", ""),
+           "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
+           "page": res.get("page_name", ""), "page_id": res.get("page_id", ""),
+           "match": res.get("match", ""), "how": res.get("how", ""), "search": name}
+    saved = day7.load()
+    saved[pid] = {**(saved.get(pid) or {}), **rec}
+    day7.save(saved)
+    return rec
 
 
 def meta_line(pid: str, facts: dict, lead: dict | None = None) -> list:
     """10/25, Joey: "another line that includes Meta Ads, yes or no. If it's a yes, then I would like a link to their
     corresponding Facebook Ad Library". 10/26, Joey: "double, triple, quadruple check the Meta ads claim": a reply
     always gets a fresh check that also opens the Facebook Page their website (or reply) links to and counts ads
-    that link to their website (day7/adlib.py check_home), saved for day 7 too. The line under it says how the Page
-    was tied to them. Only ads tied to the home count as yes. If Meta does not answer, the day 7 check (under two
-    weeks old) is used."""
+    that link to their website (check_meta), saved for day 7 too. The line under it says how the Page was tied to
+    them. Only ads tied to the home count as yes. 10/28, Joey: "We must always check": when Meta cannot be checked,
+    the line says so and send_alert_texts keeps retrying and texts the answer when it has it (META_LATER)."""
     from datetime import date
     from urllib.parse import quote
-    ld = lead or {}
     try:
         from .day7 import build as day7, phone
         old = day7.load().get(pid)
         rec = old if old and old.get("v") == 2 and old.get("checked") == date.today().isoformat() else None
-        if not rec:
-            queue = {x["id"]: x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8"))}
-            p = queue.get(pid)
-            if not p:
-                return []
-            from .day7.adlib import check_home
-            home = day7.home_name(p)
-            name = home if home != "your home" else day7._clean_license(facts.get("facility") or p.get("facility", ""))
-            try:
-                res = check_home(day7.S.start().adlib(), name, facts.get("city", ""), facts.get("state", ""),
-                                 website=ld.get("website", ""), fb_links=[ld["facebook"]] if ld.get("facebook") else [])
-            except Exception:
-                if old and (date.today() - date.fromisoformat(old["checked"])).days <= 14:
-                    res = None
-                    rec = old
-                else:
-                    raise
-            if res is not None:
-                rec = {"v": 2, "checked": date.today().isoformat(), "ads": res.get("running_ads", ""),
-                       "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
-                       "page": res.get("page_name", ""), "page_id": res.get("page_id", ""),
-                       "match": res.get("match", ""), "how": res.get("how", ""), "search": name}
-                saved = day7.load()
-                saved[pid] = {**(saved.get(pid) or {}), **rec}
-                day7.save(saved)
-    except Exception:
-        return ["Meta ads: could not check right now"]
+        rec = rec or check_meta(pid, facts, lead or {})
+        if rec is None:
+            return []
+    except Exception as ex:
+        print(f"meta check {pid} failed: {ex!r}"[:400], flush=True)
+        return [META_LATER]
     how = rec.get("how", "")
     if rec.get("ads") == "yes":
         since = f", since {phone.since(date.fromisoformat(rec['start']))}" if rec.get("start") else ""
@@ -392,6 +405,26 @@ def meta_line(pid: str, facts: dict, lead: dict | None = None) -> list:
     return ["Meta ads: none found (no Facebook Page found for them)"]
 
 
+def replied_to_line(item: dict) -> list:
+    """10/28, Joey: "I need to see what email they are replying to, like what stage they are in."
+    -> ['Replied to: Day 3 email (2 of 4), sent Oct 28: "I just emailed you."'] or []."""
+    t = item.get("replied_to") or {}
+    if not t.get("step"):
+        return []
+    from datetime import date
+    from . import carehome as ch
+    try:
+        p = next((x for x in json.load(open(FACTS.parent / "queue.json", encoding="utf-8")) if x["id"] == item.get("id")), {})
+    except (OSError, ValueError):
+        p = {}
+    offs = ch.offsets(p)
+    step = int(t["step"])
+    day = f"Day {offs[step] + 1} email" if step in offs else f"email {step}"
+    sent = date.fromisoformat(t["sent"]).strftime("%b %d").replace(" 0", " ") if t.get("sent") else ""
+    line = f"Replied to: {day} ({step} of {max(offs)})" + (f", sent {sent}" if sent else "")
+    return [line + (f': "{t["line"]}"' if t.get("line") else "")]
+
+
 def alert_text(item: dict, lead: dict | None) -> str:
     """Joey's text, in the agent's own shape ("Call now: 20. Iivory W ... Reply "20" to call.")."""
     who = short_name(item.get("from_name", ""), item.get("first_name") or "Owner")
@@ -402,7 +435,7 @@ def alert_text(item: dict, lead: dict | None) -> str:
         said = said[:700].rsplit(" ", 1)[0] + "..."
     phone = pretty_phone((lead or {}).get("phone", "")) or "not found"
     site = re.sub(r"^https?://(www\.)?", "", (lead or {}).get("website", "")).rstrip("/") or "not found"
-    lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}", f"\"{said}\""]
+    lines = [f"{head}: {code + '. ' if code else ''}{who}, {item.get('facility', '')}"] + replied_to_line(item) + [f"\"{said}\""]
     facts = _facts(item.get("id", ""))
     lines += community_lines(facts)
     lines += meta_line(item.get("id", ""), facts, lead)
@@ -421,3 +454,19 @@ def alert_text(item: dict, lead: dict | None) -> str:
     else:
         lines.append(f"Reply \"{code}\" to call.")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":  # python -m surven_outreach.email_leads meta-check 3   (cloud task "meta-check")
+    import sys
+    import traceback
+    if sys.argv[1:2] == ["meta-check"]:
+        from .day7 import build as _day7
+        _day7.save = lambda s: None  # a test: nothing is saved
+        items = [json.loads(l) for l in open(D / "alerts_sent.jsonl", encoding="utf-8") if l.strip()]
+        for it in items[-int((sys.argv[2:3] or ["3"])[0]):]:
+            print("=" * 40, it["id"], flush=True)
+            try:
+                print(check_meta(it["id"], _facts(it["id"]), it.get("lead") or {}), flush=True)
+            except Exception:
+                traceback.print_exc()
+        _day7.close()
