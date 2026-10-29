@@ -66,6 +66,22 @@ def test_day7_prep_picks_homes_due_by_tomorrow_without_a_fresh_check(monkeypatch
     assert [r["id"] for r, p in got] == ["tomorrow"]
 
 
+def test_a_reply_or_list_check_without_a_photo_still_gets_its_day7_photo_picked(monkeypatch):
+    """The reply text's Ad Library check (v 2) picks no photo; day 7 must still pick one, or the free ad would use the
+    stock photo."""
+    from datetime import date
+    from surven_outreach.day7 import build as day7
+    con = db()
+    for pid in ("no_photo", "photo", "ads"):
+        home(con, pid, 2, "2026-10-27", "2026-10-29")
+    monkeypatch.setattr(day7, "load", lambda: {
+        "no_photo": {"v": 2, "checked": "2026-10-31", "ads": "no"},
+        "photo": {"v": 2, "checked": "2026-10-31", "ads": "no", "photo": "https://x/a.jpg"},
+        "ads": {"v": 2, "checked": "2026-10-31", "ads": "yes", "start": "2026-08-20"}})
+    got = ch.day7_due(con, {"no_photo": V3, "photo": V3, "ads": V3}, date(2026, 11, 1))
+    assert [r["id"] for r, p in got] == ["no_photo"]
+
+
 def test_v3_ends_after_day14_and_old_homes_keep_six():
     con = db()
     home(con, "v3_done", 4, "2026-10-10", "2026-10-23")
@@ -273,3 +289,48 @@ def test_joeys_pc_checks_homes_due_within_two_days_and_pushes_them(monkeypatch, 
     monkeypatch.setattr(day7, "prep", prep)
     mf.day7_checks()
     assert checked == ["due"] and pushes == [1]
+
+
+def test_joeys_pc_checks_every_emailed_home_newest_first_once_a_week(monkeypatch, tmp_path):
+    """10/29, Joey: "build a system that checks when somebody replies": the PC checks the whole list ahead of time."""
+    import json
+    from datetime import date, timedelta
+    from surven_outreach import email_leads as el, meta_followup as mf
+    from surven_outreach.day7 import build as day7
+    from surven_outreach.day7.adlib import RateLimited
+    today = date.today()
+    path = tmp_path / "cloud.db"
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.executescript(ch.SCHEMA)
+    ago = lambda n: (today - timedelta(days=n)).isoformat()
+    for pid, first, status in [("old", ago(40), "completed"), ("week", ago(6), "active"), ("new", ago(0), "active"),
+                               ("bounced", ago(1), "bounced"), ("out", ago(1), "opted_out"), ("fresh", ago(2), "active"),
+                               ("stale", ago(3), "active")]:
+        con.execute("INSERT INTO prospects (id,email,facility,status,first_sent_on) VALUES (?,?,?,?,?)",
+                    (pid, f"{pid}@x.com", pid, status, first))
+    con.commit()
+    saved = {"fresh": {"checked": ago(1)}, "stale": {"checked": ago(7)}}
+    assert mf.list_due(con, saved, today) == ["new", "stale", "week"]
+    con.close()
+
+    files = {"carehome.db": path.read_bytes(), "day7.json": json.dumps(saved).encode()}
+    monkeypatch.setattr(mf, "fetch", lambda: None)
+    monkeypatch.setattr(mf, "state_file", lambda name: files[name])
+    monkeypatch.setattr(mf, "LOG", tmp_path / "log")
+    monkeypatch.setattr(mf.time, "sleep", lambda s: None)
+    monkeypatch.setattr(day7, "STATE", tmp_path / "day7.json")
+    monkeypatch.setattr(day7, "PC_STATE", tmp_path / "day7_pc.json")
+    monkeypatch.setattr(el, "_facts", lambda pid: {"website": f"https://{pid}.com"})
+    pushes, seen = [], []
+    monkeypatch.setattr(mf, "push", lambda: pushes.append(1))
+
+    def check(pid, facts, ld):
+        seen.append((pid, ld["website"]))
+        if pid == "stale":
+            raise RateLimited("Rate limit exceeded")
+        return {"ads": "no"}
+    monkeypatch.setattr(el, "check_meta", check)
+    mf.list_checks()
+    assert seen == [("new", "https://new.com"), ("stale", "https://stale.com")]  # Meta refused: stop, next run
+    assert pushes == [1]

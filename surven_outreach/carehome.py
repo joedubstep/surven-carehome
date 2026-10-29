@@ -885,7 +885,7 @@ def cmd_run(con, dry: bool) -> None:
 
 
 def day7_due(con, queue: dict, today: date, within: int = 1) -> list:
-    """v3 homes whose day 7 falls today or within `within` days and have no fresh Ad Library record yet."""
+    """v3 homes whose day 7 falls today or within `within` days and have no fresh Ad Library record with a photo yet."""
     from .day7 import build as day7
     done = day7.load()
     out = []
@@ -895,7 +895,7 @@ def day7_due(con, queue: dict, today: date, within: int = 1) -> list:
             continue
         due = date.fromisoformat(r["first_sent_on"]) + timedelta(days=SEQ_V3[3])
         rec = done.get(r["id"])
-        fresh = rec and (today - date.fromisoformat(rec["checked"])).days <= 3
+        fresh = rec and (today - date.fromisoformat(rec["checked"])).days <= 3 and day7.ready(rec)
         if due <= today + timedelta(days=within) and not fresh:
             out.append((r, p))
     return out

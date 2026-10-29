@@ -367,19 +367,35 @@ def meta_line(pid: str, facts: dict, lead: dict | None = None) -> list:
     always gets a fresh check that also opens the Facebook Page their website (or reply) links to and counts ads
     that link to their website (check_meta), saved for day 7 too. The line under it says how the Page was tied to
     them. Only ads tied to the home count as yes. 10/28, Joey: "We must always check": when Meta cannot be checked,
-    the line says so and send_alert_texts keeps retrying and texts the answer when it has it (META_LATER)."""
+    the line says so and Joey's PC texts the answer when it has it (META_LATER).
+    10/29, Joey: "why is no email reply text including whether they have Meta ads or not?" Meta refuses the cloud
+    most of the time, so most texts said "still checking". Joey's PC now checks every home we emailed ahead of time
+    (meta_followup.list_checks), and when Meta refuses the fresh check the text uses that one, with its date."""
     from datetime import date
-    from urllib.parse import quote
+    from .day7 import build as day7
+    old = day7.load().get(pid) or {}
     try:
-        from .day7 import build as day7, phone
-        old = day7.load().get(pid)
-        rec = old if old and old.get("v") == 2 and old.get("checked") == date.today().isoformat() else None
+        rec = old if old.get("v") == 2 and old.get("checked") == date.today().isoformat() else None
         rec = rec or check_meta(pid, facts, lead or {})
         if rec is None:
             return []
+        lines = _meta_lines(rec, facts)
     except Exception as ex:
         print(f"meta check {pid} failed: {ex!r}"[:400], flush=True)
-        return [META_LATER]
+        if not old.get("checked") or (date.today() - date.fromisoformat(old["checked"])).days > SAVED_DAYS:
+            return [META_LATER]
+        lines = _meta_lines(old, facts)
+        lines[0] += f" (checked {date.fromisoformat(old['checked']).strftime('%b %d').replace(' 0', ' ')})"
+    return lines
+
+
+SAVED_DAYS = 7  # how old a saved check a reply text may use; list_checks re-checks every home this often
+
+
+def _meta_lines(rec: dict, facts: dict) -> list:
+    from datetime import date
+    from urllib.parse import quote
+    from .day7 import phone
     how = rec.get("how", "")
     if rec.get("ads") == "yes":
         since = f", since {phone.since(date.fromisoformat(rec['start']))}" if rec.get("start") else ""

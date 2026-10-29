@@ -303,7 +303,32 @@ def test_a_reply_gets_a_fresh_meta_check_with_their_website_and_says_still_check
     def broken(*a, **k):
         raise adlib.RateLimited("Meta rate limited")
     monkeypatch.setattr(adlib, "check_home", broken)
+    old["x"]["checked"] = "2020-01-01"  # a check too old to stand in for this one
     assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [el.META_LATER]
+
+
+def test_when_meta_refuses_the_cloud_the_text_uses_the_pcs_check_from_this_week(monkeypatch, tmp_path):
+    """10/29, Joey: "why is no email reply text including whether they have Meta ads or not?" Joey's PC checks the
+    whole list ahead of time; the text uses that check, with its date, when Meta refuses the fresh one."""
+    from datetime import date, timedelta
+    from surven_outreach.day7 import adlib, build as day7
+    two_ago = date.today() - timedelta(days=2)
+    old = {"x": {"v": 2, "checked": two_ago.isoformat(), "ads": "no", "page": "The Fite Living Centre",
+                 "page_id": "339574046120088", "how": "Page linked on their website"},
+           "y": {"v": 2, "checked": (date.today() - timedelta(days=8)).isoformat(), "ads": "no"}}
+    monkeypatch.setattr(day7, "load", lambda: old)
+    monkeypatch.setattr(el, "FACTS", tmp_path / "lead_facts.json")
+    (tmp_path / "queue.json").write_text(json.dumps([{"id": "x", "facility": "Fite"}, {"id": "y", "facility": "Y"}]))
+    monkeypatch.setattr(day7.S, "start", lambda: type("S", (), {"adlib": lambda self: None, "pw": None})())
+
+    def broken(*a, **k):
+        raise adlib.RateLimited("Meta rate limited")
+    monkeypatch.setattr(adlib, "check_home", broken)
+    when = two_ago.strftime("%b %d").replace(" 0", " ")
+    assert el.meta_line("x", {}, {"website": "https://www.fitelivingcentre.com"}) == [
+        f"Meta ads: no (checked {when})",
+        "(their Page, The Fite Living Centre, has 0 ads. How we know it's theirs: Page linked on their website)"]
+    assert el.meta_line("y", {}, {}) == [el.META_LATER]  # older than a week: Joey's PC texts the fresh answer
 
 
 def test_the_text_says_which_email_they_answered(world):

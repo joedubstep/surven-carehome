@@ -12,6 +12,13 @@ same way, so this also checks every home whose day 7 is due within 2 days (day7.
 pick) and pushes the answers to the state branch as data/carehome/day7_pc.json. The cloud's send runs read that file,
 so the email goes out with the right picture. One run at a time (meta_followup.lock), since a batch of 100 homes takes
 longer than 10 minutes. Run by hand: python -m surven_outreach.meta_followup
+
+Every home on the list (10/29, Joey: "why is no email reply text including whether they have Meta ads or not?...
+build a system that checks when somebody replies"): most reply texts still said "still checking", since the cloud
+makes the text and Meta refuses it. So this also checks every home we emailed in the last 30 days, newest first, once
+a week (list_checks, the same check as the reply text), pushed with the day 7 answers. The reply text uses that check
+when Meta refuses the cloud (email_leads.meta_line), so it has the answer the moment the reply comes in. Replies
+still waiting on Meta are answered between homes, so a long batch never holds them up.
 """
 import json
 import sqlite3
@@ -103,6 +110,13 @@ def run() -> None:
             day7.close()
 
 
+def replies() -> None:
+    try:
+        run()
+    except Exception as ex:  # a reply problem must not stop the Ad Library checks
+        log(f"replies error: {ex!r}"[:500])
+
+
 def push() -> None:
     """The PC's Ad Library checks to the state branch, where the cloud's send runs pull them."""
     if (D / "day7_pc.json").exists():
@@ -110,46 +124,82 @@ def push() -> None:
                        cwd=REPO, check=True, capture_output=True, timeout=300)
 
 
-def day7_checks(within: int = 2, minutes: int = 50) -> None:
-    """Ad Library check + photo pick for every home whose day 7 is due within `within` days and has no fresh check."""
+def cloud_rows(pick):
+    """pick(con) on the cloud's carehome.db, with the cloud's day 7 checks in place so none is done twice."""
     from .day7 import build as day7
-    from .day7.adlib import RateLimited
     fetch()
-    day7.STATE.write_bytes(state_file("day7.json"))  # the cloud's own checks, so none is done twice
+    day7.STATE.write_bytes(state_file("day7.json"))
     with tempfile.TemporaryDirectory() as td:
         db = Path(td) / "carehome.db"
         db.write_bytes(state_file("carehome.db"))
         con = sqlite3.connect(db)
         con.row_factory = sqlite3.Row
         try:
-            items = ch.day7_due(con, ch.load_queue(), date.today(), within=within)
+            return pick(con)
         finally:
             con.close()
+
+
+def check_all(label: str, items: list, check, minutes: int) -> None:
+    """check(item) -> its record, for each item until `minutes` run out or Meta refuses this PC. Pushed every 10
+    homes and at the end; replies waiting on Meta are answered at each push."""
+    from .day7.adlib import RateLimited
     if not items:
         return
-    log(f"day 7: {len(items)} home(s) to check")
+    log(f"{label}: {len(items)} home(s) to check")
     n, stop_at = Counter(), time.time() + minutes * 60
     try:
-        for i, (r, p) in enumerate(items, 1):
+        for i, it in enumerate(items, 1):
             if time.time() > stop_at:
-                log(f"day 7: {minutes} minutes used, the rest next run")
+                log(f"{label}: {minutes} minutes used, the rest next run")
                 break
             try:
-                rec = day7.prep(r, p)
-                n[rec.get("ads") or "error"] += 1
+                rec = check(it)
+                n[(rec or {}).get("ads") or "not in queue"] += 1
             except RateLimited:
-                log("day 7: Meta is rate limiting this PC, next try in 10 minutes")
+                log(f"{label}: Meta is rate limiting this PC, next try in 10 minutes")
                 break
             except Exception as ex:
                 n["error"] += 1
-                log(f"day 7 {r['id']}: {ex!r}"[:300])
+                log(f"{label} {it!r}: {ex!r}"[:300])
             if i % 10 == 0:
                 push()
+                replies()
             time.sleep(2)
     finally:
         if n:
             push()
-        log(f"day 7 done: {dict(n) or 'nothing checked'}")
+        log(f"{label} done: {dict(n) or 'nothing checked'}")
+
+
+def day7_checks(within: int = 2, minutes: int = 50) -> None:
+    """Ad Library check + photo pick for every home whose day 7 is due within `within` days and has no fresh check."""
+    from .day7 import build as day7
+    items = cloud_rows(lambda con: ch.day7_due(con, ch.load_queue(), date.today(), within=within))
+    check_all("day 7", items, lambda rp: day7.prep(*rp), minutes)
+
+
+def list_due(con, saved: dict, today: date, days: int = el.SAVED_DAYS) -> list:
+    """Every home emailed in the last 30 days that can still write back, newest first, with no Ad Library check in
+    `days` days."""
+    out = []
+    for r in con.execute("SELECT id FROM prospects WHERE first_sent_on >= ? AND status NOT IN ('bounced', 'opted_out') "
+                         "ORDER BY first_sent_on DESC, id", ((today - timedelta(days=30)).isoformat(),)):
+        rec = saved.get(r["id"]) or {}
+        if not rec.get("checked") or (today - date.fromisoformat(rec["checked"])).days >= days:
+            out.append(r["id"])
+    return out
+
+
+def list_checks(minutes: int = 40) -> None:
+    """The reply text's Meta check for every home on the list ahead of time (see the top of this file)."""
+    from .day7 import build as day7
+    ids = cloud_rows(lambda con: list_due(con, day7.load(), date.today()))
+
+    def check(pid):
+        f = el._facts(pid)
+        return el.check_meta(pid, f, {"website": f.get("website", "")})
+    check_all("list", ids, check, minutes)
 
 
 def lock():
@@ -173,11 +223,9 @@ def main() -> None:
     from .day7 import build as day7
     day7.OUT = day7.PC_STATE
     try:
-        try:
-            run()
-        except Exception as ex:  # a reply problem must not stop the day 7 checks
-            log(f"replies error: {ex!r}"[:500])
+        replies()
         day7_checks()
+        list_checks()
     finally:
         day7.close()
         held.close()

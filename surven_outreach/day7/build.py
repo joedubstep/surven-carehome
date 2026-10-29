@@ -64,6 +64,12 @@ def save(s: dict) -> None:
     OUT.write_text(json.dumps({k: v for k, v in s.items() if cloud.get(k) != v}, indent=1), encoding="utf-8")
 
 
+def ready(rec: dict) -> bool:
+    """A record the day 7 email can be built from: the photo is picked, or they run ads (no photo needed). The Ad
+    Library checks made for reply texts (email_leads.check_meta, "v" 2) have no photo yet, so day 7 still picks one."""
+    return "v" not in rec or "photo" in rec or (rec.get("ads") == "yes" and bool(rec.get("start")))
+
+
 def _facts(pid: str) -> dict:
     if "facts" not in _cache:
         try:
@@ -208,7 +214,8 @@ def prep(r, p: dict, today: date | None = None) -> dict:
         raise
     rec = {"checked": (today or date.today()).isoformat(), "ads": res.get("running_ads", ""),
            "count": res.get("active_ads", ""), "start": res.get("earliest_start", ""),
-           "page": res.get("page_name", ""), "page_id": res.get("page_id", ""), "match": res.get("match", "")}
+           "page": res.get("page_name", ""), "page_id": res.get("page_id", ""), "match": res.get("match", ""),
+           "how": res.get("how", ""), "search": search}
     if not (rec["ads"] == "yes" and rec["start"]):
         rec.update(pick_photo(r, p, rec))
     s = load()
@@ -285,6 +292,11 @@ def _html(before: str, cid: str, alt: str, width: int, after: str) -> str:
 def build(r, p: dict) -> dict:
     """-> {"body": plain text, "html": html, "images": [(cid, bytes, subtype)], "kind": "ads" | "free_ad"}"""
     rec = load().get(r["id"]) or prep(r, p)
+    if not ready(rec):  # only the Ad Library was checked (a reply text or the list check): pick the photo now
+        rec = {**rec, **pick_photo(r, p, rec)}
+        s = load()
+        s[r["id"]] = rec
+        save(s)
     first, home = first_name(r), home_name(p)
     if rec.get("ads") == "yes" and rec.get("start"):
         body = phone.ads_email(first, home, date.fromisoformat(rec["start"]))
