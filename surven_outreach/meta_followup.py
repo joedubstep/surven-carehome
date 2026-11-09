@@ -194,7 +194,8 @@ def list_due(con, saved: dict, today: date, days: int = el.SAVED_DAYS) -> list:
 def list_checks(minutes: int = 40) -> None:
     """The reply text's Meta check for every home on the list ahead of time (see the top of this file)."""
     from .day7 import build as day7
-    ids = cloud_rows(lambda con: list_due(con, day7.load(), date.today()))
+    queue = ch.load_queue()  # a home not in the queue has nothing to check, and would be listed again every run
+    ids = [i for i in cloud_rows(lambda con: list_due(con, day7.load(), date.today())) if i in queue]
 
     def check(pid):
         f = el._facts(pid)

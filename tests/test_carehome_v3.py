@@ -322,6 +322,7 @@ def test_joeys_pc_checks_every_emailed_home_newest_first_once_a_week(monkeypatch
     monkeypatch.setattr(day7, "STATE", tmp_path / "day7.json")
     monkeypatch.setattr(day7, "PC_STATE", tmp_path / "day7_pc.json")
     monkeypatch.setattr(el, "_facts", lambda pid: {"website": f"https://{pid}.com"})
+    monkeypatch.setattr(ch, "load_queue", lambda: {"new": V3, "stale": V3})  # "week" left the queue
     pushes, seen = [], []
     monkeypatch.setattr(mf, "push", lambda: pushes.append(1))
 
