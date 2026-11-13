@@ -322,7 +322,9 @@ def _ghl_sms(text: str) -> bool:
     import subprocess
     from . import secrets_store
     tok = secrets_store.get("GHL_PIT")
-    body = json.dumps({"type": "SMS", "contactId": GHL_JOEY_CONTACT, "message": text})
+    # From 810 by name (11/13): without fromNumber GoHighLevel reuses the number that last texted Joey's contact, and
+    # 978 is for automated booking reminders only, so a reply alert came from 978 on 11/13.
+    body = json.dumps({"type": "SMS", "contactId": GHL_JOEY_CONTACT, "fromNumber": "+18103805409", "message": text})
     r = subprocess.run(["curl", "-s", "-X", "POST", "https://services.leadconnectorhq.com/conversations/messages",
                         "-H", "Authorization: Bearer " + tok, "-H", "Version: 2021-04-15",
                         "-H", "Content-Type: application/json", "--data-binary", "@-"],
