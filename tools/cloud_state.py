@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = "data/carehome/"
 CLOUD_OWNED = ["carehome.db", "day7.json", "email_verify.json", "email_enrich.json", "senders.json", "scan_state.json", "last_run.json", "alerts_pending.jsonl", "alerts_inflight.jsonl",
                "alerts_sent.jsonl", "warmup.json", "run.log", "task.log", "stats.log", "stats_task.log", "stats_notion_map.json",
-               "build/notion_map.json"]
+               "build/notion_map.json", "suppress.json"]
 LOCAL_OWNED = ["queue.json", "sheet_map.json", "phones.json", "funnel_events.json", "lead_facts.json", "build/prospects.json",
                "build/notion_sync.py", "day7_pc.json"]  # day7_pc.json: the PC's Ad Library checks (10/28, meta_followup.py)
 LOGS = {"run.log", "task.log", "stats.log", "stats_task.log"}
@@ -55,7 +55,11 @@ def remote_files(sha):
 
 
 def pull():
+    """11/13: on Nov 9 a run started with no lead database, emailed every home from day 1 again (626 homes, opt-outs
+    included) and saved that empty start over the real one. A run with no state now stops before it can send."""
     sha = fetch()
+    if not sha or BASE + "carehome.db" not in remote_files(sha):
+        raise SystemExit("no campaign state (state branch or carehome.db missing): stopping before any email goes out")
     for p in remote_files(sha):
         dest = os.path.join(ROOT, p)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -90,14 +94,40 @@ def read_local(rel):
     return data
 
 
+def sends_in(db_bytes):
+    """Rows in the sends table of a carehome.db, or -1 when it cannot be read."""
+    import sqlite3
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "c.db")
+        open(f, "wb").write(db_bytes)
+        try:
+            con = sqlite3.connect(f)
+            try:
+                return con.execute("SELECT COUNT(*) FROM sends").fetchone()[0]
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return -1
+
+
+def shrinks(old, new):
+    """True when a new carehome.db has fewer sends than the saved one. Sends only ever grow, so fewer means the run
+    started from a missing or wrong database (Nov 9). ALLOW_DB_SHRINK=1 lets a hand edit from the PC through."""
+    return os.environ.get("ALLOW_DB_SHRINK") != "1" and sends_in(new) < sends_in(old)
+
+
 def save(owned, label):
     for attempt in range(6):
         base = fetch()
         blobs = {p: git("show", f"{base}:{p}") for p in remote_files(base)}
         for rel in owned:
             data = read_local(rel)
-            if data is not None:
-                blobs[BASE + rel] = data
+            if data is None:
+                continue
+            if rel == "carehome.db" and BASE + rel in blobs and shrinks(blobs[BASE + rel], data):
+                print("NOT saving carehome.db: it has fewer sends than the saved one, so this run's database is wrong")
+                continue
+            blobs[BASE + rel] = data
         try:
             c = publish(base, blobs, f"{label} {time.strftime('%Y-%m-%d %H:%M:%S')}")
             print("state saved", c[:8], "files", len(blobs))

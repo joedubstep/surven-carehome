@@ -814,10 +814,39 @@ def send_one(con, cfg, sender, r, p, step, dry: bool, from_addr: str = PRIMARY) 
     return "sent"
 
 
+SUPPRESS = LOG.parent / "suppress.json"
+
+
+def apply_suppress(con) -> None:
+    """The do-not-email list (11/13): every home that ever opted out or bounced, by id and by address, kept in its own
+    file so a lost or rebuilt database can never email them again (Nov 9: 9 opt-outs got day 1 again). Each run adds
+    the database's opt-outs (home and address) and bounces (address) to the list, then stops any listed home that is
+    queued or active."""
+    try:
+        s = json.loads(SUPPRESS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        s = {}
+    ids, emails = s.setdefault("ids", {}), s.setdefault("emails", {})
+    for r in con.execute("SELECT id, email, status FROM prospects WHERE status IN ('opted_out', 'bounced')"):
+        if r["status"] == "opted_out":  # a bounce is the address, not the home: a new address for it may still work
+            ids.setdefault(r["id"], r["status"])
+        if r["email"]:
+            emails.setdefault(r["email"].lower(), r["status"])
+    for r in con.execute("SELECT id, email FROM prospects WHERE status IN ('queued', 'active')").fetchall():
+        why = ids.get(r["id"]) or emails.get((r["email"] or "").lower())
+        if why:
+            con.execute("UPDATE prospects SET status=?, stopped_reason=?, stopped_on=? WHERE id=?",
+                        (why, "do-not-email list", date.today().isoformat(), r["id"]))
+            log(f"{r['id']}: on the do-not-email list ({why}), stopped")
+    con.commit()
+    SUPPRESS.write_text(json.dumps(s, indent=1, sort_keys=True), encoding="utf-8")
+
+
 def cmd_run(con, dry: bool) -> None:
     cfg = load_config()
     queue = load_queue()
     if not dry:
+        apply_suppress(con)
         fix_missed_opt_outs(con)
         scan_replies(con, cfg)
         try:

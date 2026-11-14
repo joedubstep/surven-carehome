@@ -88,3 +88,54 @@ def test_a_missed_opt_out_is_fixed_on_the_next_run():
     carehome.fix_missed_opt_outs(con)
     assert {r["id"]: r["status"] for r in con.execute("SELECT * FROM prospects")} == {"gardenias": "opted_out",
                                                                                        "lodge": "replied"}
+
+
+def test_do_not_email_list_survives_a_lost_database(tmp_path, monkeypatch):
+    """11/13: on Nov 9 the lead database was lost and 9 opt-outs got day 1 again. The do-not-email list lives in its
+    own file: it learns every opt-out and bounce, and stops a listed home even after its row comes back as new."""
+    import sqlite3
+    monkeypatch.setattr(carehome, "SUPPRESS", tmp_path / "suppress.json")
+    monkeypatch.setattr(carehome, "log", lambda m: None)
+
+    def db(rows):
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript(carehome.SCHEMA)
+        for pid, email_, status in rows:
+            con.execute("INSERT INTO prospects (id,email,facility,status) VALUES (?,?,?,?)", (pid, email_, pid, status))
+        return con
+    carehome.apply_suppress(db([("gone", "a@x.com", "opted_out"), ("bad", "b@x.com", "bounced"), ("ok", "c@x.com", "active")]))
+    fresh = db([("gone", "a@x.com", "queued"), ("bad2", "B@x.com", "active"), ("ok", "c@x.com", "active")])
+    carehome.apply_suppress(fresh)
+    assert {r["id"]: r["status"] for r in fresh.execute("SELECT * FROM prospects")} == {
+        "gone": "opted_out", "bad2": "bounced", "ok": "active"}
+
+
+def test_cloud_state_stops_a_run_with_no_database_and_never_saves_a_smaller_one(tmp_path, monkeypatch):
+    import importlib.util, os, sqlite3
+    import pytest
+    spec = importlib.util.spec_from_file_location("cloud_state", os.path.join(os.path.dirname(__file__), "..", "tools", "cloud_state.py"))
+    cs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cs)
+    monkeypatch.setattr(cs, "fetch", lambda: "")
+    with pytest.raises(SystemExit):
+        cs.pull()
+    monkeypatch.setattr(cs, "fetch", lambda: "abc")
+    monkeypatch.setattr(cs, "remote_files", lambda sha: ["data/carehome/queue.json"])
+    with pytest.raises(SystemExit):
+        cs.pull()
+
+    made = []
+
+    def db(n):
+        made.append(n)
+        f = tmp_path / f"{len(made)}.db"
+        con = sqlite3.connect(f)
+        con.execute("CREATE TABLE sends (id INTEGER)")
+        con.executemany("INSERT INTO sends VALUES (?)", [(i,) for i in range(n)])
+        con.commit()
+        con.close()
+        return f.read_bytes()
+    assert cs.shrinks(db(5000), db(10)) and not cs.shrinks(db(10), db(12))
+    monkeypatch.setenv("ALLOW_DB_SHRINK", "1")
+    assert not cs.shrinks(db(5000), db(10))
