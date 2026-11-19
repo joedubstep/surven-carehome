@@ -139,3 +139,22 @@ def test_cloud_state_stops_a_run_with_no_database_and_never_saves_a_smaller_one(
     assert cs.shrinks(db(5000), db(10)) and not cs.shrinks(db(10), db(12))
     monkeypatch.setenv("ALLOW_DB_SHRINK", "1")
     assert not cs.shrinks(db(5000), db(10))
+
+
+def test_a_cancelled_campaign_reads_replies_but_sends_nothing(monkeypatch):
+    """11/19, Joey: "Can you cancel the email campaign?" Replies still reach Joey; nothing goes out."""
+    import sqlite3
+    calls = []
+    monkeypatch.setattr(carehome, "CAMPAIGN_OFF", "2026-11-19")
+    monkeypatch.setattr(carehome, "load_config", lambda: {})
+    monkeypatch.setattr(carehome, "load_queue", lambda: {})
+    monkeypatch.setattr(carehome, "log", lambda m: None)
+    monkeypatch.setattr(carehome, "scan_replies", lambda con, cfg: calls.append("scan"))
+    monkeypatch.setattr(carehome, "send_alert_texts", lambda: calls.append("texts"))
+    monkeypatch.setattr(carehome, "due_items", lambda *a, **k: calls.append("send") or [])
+    monkeypatch.setattr(carehome, "SUPPRESS", __import__("pathlib").Path(__import__("tempfile").mkdtemp()) / "s.json")
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(carehome.SCHEMA)
+    carehome.cmd_run(con, dry=False)
+    assert calls == ["scan", "texts"]

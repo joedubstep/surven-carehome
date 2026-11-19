@@ -842,6 +842,11 @@ def apply_suppress(con) -> None:
     SUPPRESS.write_text(json.dumps(s, indent=1, sort_keys=True), encoding="utf-8")
 
 
+# 11/19, Joey: "Can you cancel the email campaign?" (new clients move to cabinet painting companies, 11/18). Replies
+# are still read and texted to Joey; no cold email, follow-up or warm-up mail goes out. Set to "" to send again.
+CAMPAIGN_OFF = "2026-11-19"
+
+
 def cmd_run(con, dry: bool) -> None:
     cfg = load_config()
     queue = load_queue()
@@ -853,6 +858,9 @@ def cmd_run(con, dry: bool) -> None:
             send_alert_texts()
         except Exception as ex:  # an alert problem must never block the sends
             log(f"alert texts error: {ex!r}")
+    if CAMPAIGN_OFF:
+        log(f"run: campaign cancelled {CAMPAIGN_OFF}, replies checked, nothing sent")
+        return
     try:  # new sender domains switch on by themselves the first run after their DNS goes live
         from . import sender_domains
         sender_domains.check(quiet=True)
@@ -935,6 +943,8 @@ def day7_due(con, queue: dict, today: date, within: int = 1) -> list:
 def cmd_day7_prep(con, limit: int = 400, minutes: int = 45) -> None:
     """Nightly (Joey 10/24): the Ad Library check and photo pick for every home whose day 7 is due by tomorrow, so the
     morning sends only make the pictures. Anything missed here is done on the spot at send time."""
+    if CAMPAIGN_OFF:
+        return
     from .day7 import build as day7
     items = day7_due(con, load_queue(), date.today())[:limit]
     log(f"day7-prep: {len(items)} home(s) to check")
